@@ -1,0 +1,36 @@
+screen.LIGHTING=Lighting
+screen.SHADOWS=Shadows
+screen.ATMOSPHERE=Atmosphere
+screen.ADAPTIVE=Adaptive Performance
+screen.DEBUG=Debug
+
+option.AURELIA_DIRECT_LIGHT=Direct sunlight
+option.AURELIA_NIGHT_LIFT=Night readability
+option.AURELIA_SKY_SATURATION=Colour saturation
+option.AURELIA_FOG_DENSITY=Fog density
+option.AURELIA_ADAPTIVE=Adaptive performance controller
+option.AURELIA_SHADOWS=Directional shadows
+option.AURELIA_SHADOW_RESOLUTION=Shadow-map resolution
+option.AURELIA_SHADOW_DISTANCE=Shadow distance
+option.AURELIA_SHADOW_FILTER_MAX=Maximum shadow filter
+option.AURELIA_SHADOW_STRENGTH=Shadow strength
+option.AURELIA_SHADOW_ADAPTIVE=Adaptive shadow filtering
+option.AURELIA_DEBUG_VIEW=Debug view
+
+value.AURELIA_DEBUG_VIEW.0=Off
+value.AURELIA_DEBUG_VIEW.1=Lighting
+value.AURELIA_DEBUG_VIEW.2=Frame pacing
+value.AURELIA_DEBUG_VIEW.3=Final colour bypass
+value.AURELIA_DEBUG_VIEW.4=Raw shadow map
+value.AURELIA_DEBUG_VIEW.5=Shadow factor
+value.AURELIA_DEBUG_VIEW.6=Adaptive shadow quality
+
+option.AURELIA_ADAPTIVE.comment=Smooths prior-frame time with slow recovery. Adaptive currently drives only safe secondary budgets such as shadow filtering.
+option.AURELIA_SHADOWS.comment=Reload-bound. Potato disables the map completely.
+option.AURELIA_SHADOW_RESOLUTION.comment=Reload-bound square depth allocation. Adaptive keeps this allocation fixed.
+option.AURELIA_SHADOW_DISTANCE.comment=Reload-bound caster and receiver coverage distance in blocks.
+option.AURELIA_SHADOW_FILTER_MAX.comment=One tap is hard/cheap, two is four-tap PCF, three permits nine-tap PCF.
+option.AURELIA_SHADOW_STRENGTH.comment=Only attenuates direct sunlight; cool ambient and block light stay visible.
+option.AURELIA_SHADOW_ADAPTIVE.comment=Adaptive profile only. Uses the smoothed frame-time signal to choose 1, 4, or 9 receiver samples without resizing the map.
+option.AURELIA_DEBUG_VIEW.comment=Lighting shows normal and lightmap data. Frame pacing shows red pressure, green quality, blue reference. Raw shadow map displays depth. Shadow factor displays applied direct-light visibility. Adaptive shadow quality: red=1, amber=4, green=9 taps.
+profile.comment=Potato disables shadows. Low uses one depth comparison. Balanced targets the M1 Air with 1024 depth and four-tap PCF. Cinematic caps allocation at 1536 and uses nine taps. Adaptive keeps 1024 fixed and changes only receiver taps.

@@ -1,0 +1,25 @@
+// Every program that uses an option includes this file. Values are compile-time
+// Iris options; changing them recompiles the affected program.
+#define AURELIA_DIRECT_LIGHT 1.00 // [0.70 0.85 0.90 1.00 1.15] Direct sunlight strength
+#define AURELIA_SKY_SATURATION 1.05 // [0.85 0.95 1.05 1.15] Final colour saturation
+#define AURELIA_FOG_DENSITY 1.00 // [0.70 0.85 0.90 1.00 1.20] Atmospheric fog density
+#define AURELIA_NIGHT_LIFT 0.16 // [0.08 0.12 0.16 0.20 0.22] Playable night ambient floor
+#define AURELIA_DEBUG_VIEW 0 // [0 1 2 3 4 5 6] Debug output mode
+
+// Shadow-map allocation and distance are reload-bound Iris options. Adaptive
+// deliberately never changes them at runtime; it only changes PCF tap count.
+#define AURELIA_SHADOW_RESOLUTION 1024 // [512 1024 1536] Shadow-map edge resolution
+#define AURELIA_SHADOW_DISTANCE 96 // [64 96 128] Shadow coverage distance in blocks
+#define AURELIA_SHADOW_FILTER_MAX 2 // [1 2 3] Maximum PCF quality tier
+#define AURELIA_SHADOW_STRENGTH 0.82 // [0.70 0.82 0.90] Direct-light shadow strength
+#define AURELIA_SHADOWS // Optional directional shadow map
+
+#define AURELIA_ADAPTIVE // Smooth frame-time controller for future secondary effects
+#define AURELIA_SHADOW_ADAPTIVE // Runtime PCF budget only; no shadow-map reallocations
+
+// Keep an explicit test in source so Iris exposes this boolean option.
+#ifdef AURELIA_ADAPTIVE
+    #define AURELIA_ADAPTIVE_ENABLED 1
+#else
+    #define AURELIA_ADAPTIVE_ENABLED 0
+#endif

@@ -1,0 +1,32 @@
+# Aurelia Shaders .gitignore
+#
+# Scope: generated/cache/editor artifacts only.
+# Deliberately NOT ignored:
+#   - the phase release archives (Aurelia-Shaders-Phase*.zip) — intentional
+#     release artifacts, tracked on purpose
+#   - shaders/, docs/, tools/, README.md, LICENSE — project source and docs
+# When a path is ambiguous, it stays tracked rather than being guessed at.
+
+# macOS filesystem metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor / IDE state
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python bytecode and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local scratch and logs
+*.log
+*.tmp

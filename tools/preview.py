@@ -217,7 +217,9 @@ def main(argv: list[str] | None = None) -> int:
                     write_png(path, image)
                     written.append(path)
 
-                if len(tiles) > 1:
+                if len(tiles) > 1 or args.sheet_only:
+                    # Always compose when asked, including for a single tile:
+                    # otherwise --camera X --sheet-only wrote no file at all.
                     columns = 2 if len(tiles) > 2 else len(tiles)
                     sheet = contact_sheet(tiles, columns=columns)
                     view = "normal" if args.debug in (None, 0) else f"debug{args.debug}"

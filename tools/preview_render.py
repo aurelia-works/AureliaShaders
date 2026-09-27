@@ -574,16 +574,24 @@ class Camera:
     def model_view_inverse(self) -> np.ndarray:
         """Player space -> world, the exact inverse of :meth:`view`.
 
-        The pack reads only the rotation part, but it must be the *inverse* of the
-        view rotation: a transpose here silently mirrors every view-space uniform
-        the pack converts to a world direction, including the sun.
+        Translation-free on purpose. Iris hands the vertex stage a
+        *camera-relative* position, so view() is rotation-only and this is its
+        exact inverse. Leaving the eye in the translation column silently makes
+        ``playerPosition`` come out as an absolute world position, which breaks
+        two things at once: any view-vector term in a fragment shader is handed
+        a world direction instead of a view direction, and the pack's shadow
+        receiver projects absolute coordinates while the caster pass renders
+        camera-relative ones, so every receiver reads as fully lit.
+
+        The pack reads only the rotation part of this matrix for direction work,
+        so the matrix is built exactly only so the uniform can be checked
+        against view().
         """
         basis = self.basis
         m = identity()
         # Columns are [right, up, -forward]: negating the third basis column is
         # what inverts the -forward third row of view().
         m[:3, :3] = basis * np.array([1.0, 1.0, -1.0])
-        m[:3, 3] = np.asarray(self.eye, np.float64)
         return m
 
 

@@ -17,6 +17,13 @@
 #define AURELIA_ADAPTIVE // Smooth frame-time controller for future secondary effects
 #define AURELIA_SHADOW_ADAPTIVE // Runtime PCF budget only; no shadow-map reallocations
 
+// Analytic water surface: wave-perturbed normal, Fresnel, sky reflection and a
+// sun glint. Behind a boolean so it is revertible from the Iris options screen
+// without a code edit, and so the fallback replacement and the new shading stay
+// separable. Potato disables it; the other presets enable it explicitly.
+// A boolean option is recognised by this pack by its inline comment, so keep it.
+#define AURELIA_WATER_SURFACE // Analytic water: Fresnel, sky reflection, wave normal, sun glint
+
 // Keep an explicit test in source so Iris exposes this boolean option.
 #ifdef AURELIA_ADAPTIVE
     #define AURELIA_ADAPTIVE_ENABLED 1

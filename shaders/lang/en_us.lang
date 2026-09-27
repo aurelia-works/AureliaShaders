@@ -1,6 +1,7 @@
 screen.LIGHTING=Lighting
 screen.SHADOWS=Shadows
 screen.ATMOSPHERE=Atmosphere
+screen.WATER=Water
 screen.ADAPTIVE=Adaptive Performance
 screen.DEBUG=Debug
 
@@ -15,6 +16,7 @@ option.AURELIA_SHADOW_DISTANCE=Shadow distance
 option.AURELIA_SHADOW_FILTER_MAX=Maximum shadow filter
 option.AURELIA_SHADOW_STRENGTH=Shadow strength
 option.AURELIA_SHADOW_ADAPTIVE=Adaptive shadow filtering
+option.AURELIA_WATER_SURFACE=Water surface
 option.AURELIA_DEBUG_VIEW=Debug view
 
 value.AURELIA_DEBUG_VIEW.0=Off
@@ -32,5 +34,6 @@ option.AURELIA_SHADOW_DISTANCE.comment=Reload-bound caster and receiver coverage
 option.AURELIA_SHADOW_FILTER_MAX.comment=One tap is hard/cheap, two is four-tap PCF, three permits nine-tap PCF.
 option.AURELIA_SHADOW_STRENGTH.comment=Only attenuates direct sunlight; cool ambient and block light stay visible.
 option.AURELIA_SHADOW_ADAPTIVE.comment=Adaptive profile only. Uses the smoothed frame-time signal to choose 1, 4, or 9 receiver samples without resizing the map.
+option.AURELIA_WATER_SURFACE.comment=Analytic water: wave-perturbed normal, Fresnel, sky reflection and a sun glint. No extra texture and no extra render target. Potato disables it; turning it off restores the plain gbuffers_terrain appearance of water.
 option.AURELIA_DEBUG_VIEW.comment=Lighting shows normal and lightmap data. Frame pacing shows red pressure, green quality, blue reference. Raw shadow map displays depth. Shadow factor displays applied direct-light visibility. Adaptive shadow quality: red=1, amber=4, green=9 taps.
 profile.comment=Potato disables shadows. Low uses one depth comparison. Balanced targets the M1 Air with 1024 depth and four-tap PCF. Cinematic caps allocation at 1536 and uses nine taps. Adaptive keeps 1024 fixed and changes only receiver taps.

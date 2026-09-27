@@ -215,15 +215,20 @@ class Context:
             glfw.terminate()
             raise RuntimeError("could not create an OpenGL 3.3 core context")
         glfw.make_context_current(self.window)
-        # A hidden window can still report a zero-sized default framebuffer on
-        # some drivers; verify rather than assume, because the final pass
-        # reads back from it.
+        # Use whatever size the driver actually gave us rather than trusting the
+        # request. macOS can report a stale size immediately after window
+        # creation, and a HiDPI display can legitimately return double it;
+        # either way the render must follow the real framebuffer, not fail.
         width_now, height_now = glfw.get_framebuffer_size(self.window)
         if (width_now, height_now) != (width, height):
-            raise RuntimeError(
-                f"default framebuffer is {width_now}x{height_now}, expected {width}x{height}"
+            print(
+                f"note: requested {width}x{height}, framebuffer is "
+                f"{width_now}x{height_now}; rendering at the framebuffer size"
             )
-        self.width, self.height = width, height
+        if width_now <= 0 or height_now <= 0:
+            glfw.terminate()
+            raise RuntimeError(f"default framebuffer has no area: {width_now}x{height_now}")
+        self.width, self.height = width_now, height_now
 
     def close(self) -> None:
         glfw.terminate()
@@ -420,6 +425,41 @@ def moon_texture(size: int = 128) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Batches handed to the GL layer
 # --------------------------------------------------------------------------- #
+
+
+def skybox(radius: float = 600.0) -> RawBatch:
+    """A camera-centred cube in player space, standing in for Iris's skybox.
+
+    gbuffers_skybasic derives its view direction from the player-space position,
+    which is only a true ray if the geometry is a box around the camera. Drawing
+    a fullscreen quad instead would hand the shader a diagonal of NDC corners and
+    produce a plausible but meaningless gradient.
+    """
+    r = float(radius)
+    # (normal, corner offsets) for the six faces, wound so the inside is visible.
+    faces = (
+        ((1, 0, 0), ((r, -r, -r), (r, -r, r), (r, r, r), (r, r, -r))),
+        ((-1, 0, 0), ((-r, -r, r), (-r, -r, -r), (-r, r, -r), (-r, r, r))),
+        ((0, 1, 0), ((-r, r, -r), (r, r, -r), (r, r, r), (-r, r, r))),
+        ((0, -1, 0), ((-r, -r, r), (r, -r, r), (r, -r, -r), (-r, -r, -r))),
+        ((0, 0, 1), ((-r, -r, r), (-r, r, r), (r, r, r), (r, -r, r))),
+        ((0, 0, -1), ((r, -r, -r), (r, r, -r), (-r, r, -r), (-r, -r, -r))),
+    )
+    position, normal, index = [], [], []
+    for face, (n, corners) in enumerate(faces):
+        base = face * 4
+        position.extend(corners)
+        normal.extend([n] * 4)
+        index.extend([[base, base + 1, base + 2], [base + 2, base + 3, base]])
+    count = len(position)
+    return RawBatch(
+        position,
+        np.asarray(normal, np.float32),
+        np.zeros((count, 2), np.float32),
+        np.ones((count, 4), np.float32),
+        np.ones((count, 2), np.float32),
+        index,
+    )
 
 
 class RawBatch:
@@ -711,7 +751,7 @@ class PreviewRenderer:
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         if draw_sky:
-            self._draw_sky(self.program("gbuffers_skybasic"), common)
+            self._draw_sky(self.program("gbuffers_skybasic"), common, view, projection)
             self._draw_sun_moon(self.program("gbuffers_skytextured"), sun, moon, camera, projection, sky)
 
         terrain = self.program("gbuffers_terrain")
@@ -738,7 +778,7 @@ class PreviewRenderer:
                 alpha_test=0.0,
             )
 
-    def _draw_sky(self, program: Program, common: dict) -> None:
+    def _draw_sky(self, program: Program, common: dict, view: np.ndarray, projection: np.ndarray) -> None:
         glDisable(GL_DEPTH_TEST)
         glDepthMask(GL_FALSE)
         glDisable(GL_BLEND)
@@ -746,11 +786,12 @@ class PreviewRenderer:
         program.use()
         for name, value in common.items():
             program.set(name, value)
-        # The analytical sky reads only colour uniforms, so an NDC quad under
-        # identity transforms is an exact stand-in for Iris's skybox.
-        quad = fullscreen_quad()
-        self._bind(program, quad, identity(), identity(), None, 1.0)
-        glDrawElements(GL_TRIANGLES, quad.index_count, GL_UNSIGNED_INT, ctypes.c_void_p(0))
+        # A real skybox, not a fullscreen quad: the program reads its direction
+        # from the player-space position, which only carries meaning on geometry
+        # that surrounds the camera.
+        box = skybox()
+        self._bind(program, box, view, projection, None, 1.0)
+        glDrawElements(GL_TRIANGLES, box.index_count, GL_UNSIGNED_INT, ctypes.c_void_p(0))
 
     def _draw_sun_moon(self, program, sun, moon, camera: Camera, projection: np.ndarray, sky: Sky) -> None:
         glEnable(GL_BLEND)
@@ -761,12 +802,13 @@ class PreviewRenderer:
         program.use()
         view_space = camera.view()[:3, :3]
         for texture, world_direction in ((sun, sky.sun_direction), (moon, sky.moon_direction)):
-            # Skip a body that has set below the horizon, or that is behind the
-            # camera: a billboard at a negative view-space z is clipped anyway.
+            # Skip a body that has set below the horizon. View space looks down
+            # -z, so a direction in front of the camera has a *negative* z: the
+            # test has to be >=, not <=, or it discards everything visible.
             if world_direction[1] < -0.12:
                 continue
             view_direction = view_space @ world_direction
-            if view_direction[2] <= 0.02:
+            if view_direction[2] >= -0.02:
                 continue
             program.sampler("gtexture", 0, texture)
             # The billboard is built in view space, so only the projection applies.

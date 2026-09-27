@@ -1,0 +1,17 @@
+# Dependencies for tools/preview.py -- the offline preview harness.
+#
+# Deliberately separate from the shaderpack itself: Iris loads only shaders/,
+# and none of this is needed to install or run the pack in Minecraft.
+#
+#   python3 -m venv tools/.venv
+#   tools/.venv/bin/pip install -r tools/preview-requirements.txt
+#
+# PyOpenGL is a ctypes binding and glfw ships manylinux/macos wheels, so neither
+# compiles here. The harness needs a window-server session: it creates a *hidden*
+# GLFW window, because a core-profile context on macOS cannot be created without
+# one. Nothing is ever displayed.
+
+PyOpenGL>=3.1.7
+glfw>=2.5
+numpy>=1.24
+pillow>=10.0

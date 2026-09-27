@@ -497,24 +497,28 @@ def _props(world: World) -> list[tuple[int, int, int, float]]:
 
 
 def _build_water_surface(world: World) -> Batch:
-    """One quad at sea level, as a translucent batch.
+    """A double-sided quad at sea level, as a translucent batch.
 
     Terrain draws first with depth writes, so land above sea level occludes this
     plane for free. Keeping it a single quad also means the preview exercises the
-    water program from both above and below the surface, which a heightfield-
-    clipped water mesh could not.
+    water program from both above and below the surface.
+
+    Both windings are emitted because the water pass runs with back-face culling,
+    which is Iris's per-program decision rather than something the pack controls:
+    a single-sided plane would make the underwater viewpoint show no water at all
+    and quietly hide whatever the water program does from below.
     """
     builder = _Builder()
     lo, hi = float(world.origin), float(world.origin + world.size)
     y = SEA_LEVEL + 0.9
-    builder.add(
-        ((lo, y, lo), (lo, y, hi), (hi, y, hi), (hi, y, lo)),
-        (0.0, 1.0, 0.0),
-        _tile_uvs(WATER),
-        TINT_WATER,
-        np.ones(4, np.float32),
-        (0.0, 0.92),
-    )
+    uvs = _tile_uvs(WATER)
+    tint = TINT_WATER
+    light = (0.0, 0.92)
+    for corners, normal in (
+        (((lo, y, lo), (lo, y, hi), (hi, y, hi), (hi, y, lo)), (0.0, 1.0, 0.0)),
+        (((lo, y, lo), (hi, y, lo), (hi, y, hi), (lo, y, hi)), (0.0, -1.0, 0.0)),
+    ):
+        builder.add(corners, normal, uvs, tint, np.ones(4, np.float32), light)
     return builder.finish()
 
 

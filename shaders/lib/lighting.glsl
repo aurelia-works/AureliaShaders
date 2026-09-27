@@ -49,7 +49,11 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     // this avoids the Phase 1 underexposure on ordinary outdoor blocks.
     float skyLight = pow(clamp(lightLevel.y, 0.0, 1.0), 0.72);
     float blockLight = pow(clamp(lightLevel.x, 0.0, 1.0), 0.80);
-    float ndl = max(dot(normalize(worldNormal), lightDir), 0.0);
+    // worldNormal already arrives normalized, so spend the one normalize() here
+    // and let the optional terms below reuse this local instead of paying for a
+    // second one. The direct-light expression is unchanged by the hoist.
+    vec3 normal = normalize(worldNormal);
+    float ndl = max(dot(normal, lightDir), 0.0);
 
     // Sky light remains a broad fill with only a restrained blue bias. The
     // Phase 1 blue vector was too strong and made shadowed daylight teal.
@@ -62,7 +66,54 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     // torch light teal/dim by multiplying the entire accumulated result.
     direct *= 1.0 - 0.38 * rainStrength;
 
-    return albedo * (coolAmbient + direct + torch);
+    // Optional per-pixel terms, both ALU only: no sampler, uniform, render
+    // target, or pass. With both options undefined the additions below vanish
+    // at compile time and this is the original expression.
+    vec3 lit = coolAmbient + direct + torch;
+
+#if defined(AURELIA_FOLIAGE_TRANSLUCENCY) || defined(AURELIA_WETNESS_SPECULAR)
+    // playerPosition is camera-relative player space, so the camera sits at its
+    // origin and this is the camera-to-fragment view direction in world axes.
+    // The celestial directions were already converted to world space above, so
+    // view and light vectors can be combined directly.
+    vec3 viewDir = normalize(playerPosition);
+#endif
+
+#ifdef AURELIA_FOLIAGE_TRANSLUCENCY
+    // Wrapped transmission for thin geometry. backLit is high only where the
+    // visible face is turned away from the sun, sunBehind only where the camera
+    // looks sunward, so back-lit leaves and grass pick up sunlight instead of
+    // going black while front-lit terrain gains nothing. Deliberately not
+    // multiplied by `shadow`, so the term stays separable from
+    // AURELIA_SHADOW_STRENGTH, and tinted by albedo through the product below.
+    float backLit = max(-dot(normal, lightDir), 0.0);
+    float sunBehind = max(dot(viewDir, lightDir), 0.0);
+    lit += aureliaSunColor(lightDir.y) * (sunUp * skyLight * 0.55
+        * (1.0 - 0.38 * rainStrength) * backLit * sunBehind * sunBehind);
+#endif
+
+    vec3 color = albedo * lit;
+
+#ifdef AURELIA_WETNESS_SPECULAR
+    // Rain sheen: one Blinn lobe on the existing sun/view pair. smoothstep is
+    // exactly zero at rainStrength 0.05 and below, and the branch is uniform
+    // per frame, so dry weather pays nothing and stays bit-identical. The ndl
+    // mask keeps the sheen on faces the directional light actually reaches; it
+    // is a surface reflection, so it is added after the albedo product.
+    float wetness = smoothstep(0.05, 0.70, rainStrength);
+    if (wetness > 0.0) {
+        // Surface-to-eye is -viewDir, so the Blinn half vector is L + V.
+        vec3 halfDir = normalize(lightDir - viewDir);
+        float lobe = max(dot(normal, halfDir), 0.0);
+        lobe *= lobe;
+        lobe *= lobe;
+        lobe *= lobe;
+        color += vec3(0.70, 0.78, 0.92)
+            * (wetness * sunUp * skyLight * ndl * lobe * 0.50);
+    }
+#endif
+
+    return color;
 }
 
 vec3 aureliaApplyFog(vec3 color, vec3 viewPosition) {

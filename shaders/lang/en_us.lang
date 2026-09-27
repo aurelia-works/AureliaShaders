@@ -17,6 +17,8 @@ option.AURELIA_SHADOW_FILTER_MAX=Maximum shadow filter
 option.AURELIA_SHADOW_STRENGTH=Shadow strength
 option.AURELIA_SHADOW_ADAPTIVE=Adaptive shadow filtering
 option.AURELIA_WATER_SURFACE=Water surface
+option.AURELIA_FOLIAGE_TRANSLUCENCY=Foliage translucency
+option.AURELIA_WETNESS_SPECULAR=Rain wetness sheen
 option.AURELIA_DEBUG_VIEW=Debug view
 
 value.AURELIA_DEBUG_VIEW.0=Off
@@ -36,4 +38,6 @@ option.AURELIA_SHADOW_STRENGTH.comment=Only attenuates direct sunlight; cool amb
 option.AURELIA_SHADOW_ADAPTIVE.comment=Adaptive profile only. Uses the smoothed frame-time signal to choose 1, 4, or 9 receiver samples without resizing the map.
 option.AURELIA_WATER_SURFACE.comment=Analytic water: wave-perturbed normal, Fresnel, sky reflection and a sun glint. No extra texture and no extra render target. Potato disables it; turning it off restores the plain gbuffers_terrain appearance of water.
 option.AURELIA_DEBUG_VIEW.comment=Lighting shows normal and lightmap data. Frame pacing shows red pressure, green quality, blue reference. Raw shadow map displays depth. Shadow factor displays applied direct-light visibility. Adaptive shadow quality: red=1, amber=4, green=9 taps.
+option.AURELIA_FOLIAGE_TRANSLUCENCY.comment=Wrapped transmission for thin geometry: leaves and grass facing away from the sun pick up a little sunlight when you look sunward, instead of going black. Costs a few ALU ops and no texture read; it does not touch the shadow term.
+option.AURELIA_WETNESS_SPECULAR.comment=A small Blinn highlight that fades in with rain strength and is off in dry weather, so rain reads as wet surfaces. ALU only, no extra texture or render target.
 profile.comment=Potato disables shadows. Low uses one depth comparison. Balanced targets the M1 Air with 1024 depth and four-tap PCF. Cinematic caps allocation at 1536 and uses nine taps. Adaptive keeps 1024 fixed and changes only receiver taps.

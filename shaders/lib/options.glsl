@@ -24,6 +24,12 @@
 // A boolean option is recognised by this pack by its inline comment, so keep it.
 #define AURELIA_WATER_SURFACE // Analytic water: Fresnel, sky reflection, wave normal, sun glint
 
+// Forward-light additions that are per-pixel ALU only: no new uniform, sampler,
+// render target, or pass, and neither touches the existing direct-light or
+// shadow terms. Potato disables both; the other presets enable them explicitly.
+#define AURELIA_FOLIAGE_TRANSLUCENCY // Backlit leaves and grass pick up sunlight instead of going black
+#define AURELIA_WETNESS_SPECULAR // Small rain-only sheen so wet weather reads as wet
+
 // Keep an explicit test in source so Iris exposes this boolean option.
 #ifdef AURELIA_ADAPTIVE
     #define AURELIA_ADAPTIVE_ENABLED 1

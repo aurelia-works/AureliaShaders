@@ -23,6 +23,9 @@ INCLUDE = re.compile(r'^\s*#include\s+"([^"]+)"\s*$')
 OPTION = re.compile(r"^#define\s+(AURELIA_[A-Z_]+)(?:\s+([^/\s]+))?\s*//\s*\[([^]]*)\]")
 BOOLEAN_OPTION = re.compile(r"^#define\s+(AURELIA_[A-Z_]+)\s*//")
 PROFILE = re.compile(r"^profile\.([A-Z]+)\s*=\s*(.*)$")
+# Interpolated stage variables: `out` in a vertex stage, `in` in a fragment stage.
+_VARYING_RE = re.compile(r"^\s*(?:out|in)\s+(?:lowp\s+|mediump\s+|highp\s+)?\w+\s+(\w+)\s*;",
+                         re.MULTILINE)
 SHADOW_DISTANCE = re.compile(
     r"^\s*const\s+float\s+shadowDistance\s*=\s*([^;]+);", re.MULTILINE
 )
@@ -130,6 +133,64 @@ def validate_iris_shadow_directives(shaders_root: Path) -> None:
         )
 
 
+def validate_exposed_options_are_used(shaders_root: Path) -> None:
+    """Reject a custom uniform or option that Iris exposes but nothing reads.
+
+    Iris builds an options screen from shaders.properties, so a uniform declared
+    there appears as a working control whether or not any program consumes it.
+    That failure is invisible in every other check: the pack compiles, links and
+    validates, and the control simply does nothing when used. This has shipped
+    twice here, so it is a hard failure.
+    """
+    properties = (shaders_root / "shaders.properties").read_text(encoding="utf-8")
+    declared = set(re.findall(r"uniform\.\w+\.(\w+)\s*=", properties))
+
+    # Everything a program could read, taken from the fully expanded sources.
+    readable: set[str] = set()
+    for source in sorted(shaders_root.glob("*.vsh")) + sorted(shaders_root.glob("*.fsh")):
+        text = expand(source, shaders_root)
+        readable.update(re.findall(r"\b([A-Za-z_]\w*)\b", text))
+
+    unused = sorted(name for name in declared if name not in readable)
+    if unused:
+        raise ValueError(
+            f"uniform(s) declared in shaders.properties but read by no program: "
+            f"{', '.join(unused)}. Iris still shows each as an options-screen control, "
+            f"so it would appear to work and do nothing."
+        )
+
+
+def validate_varying_interfaces(shaders_root: Path) -> None:
+    """Reject a half-applied change to a program pair.
+
+    A vertex output that no fragment stage declares as an input is dead code, and
+    it is the signature of a change that was applied to only one stage of a pair:
+    the program still compiles, still links, still validates, and simply ignores
+    the value. That is exactly what shipped once, so it is now a hard failure.
+    """
+    global _VARYING_RE
+    for vertex_source in sorted(shaders_root.glob("*.vsh")):
+        program = vertex_source.stem
+        fragment_source = shaders_root / f"{program}.fsh"
+        if not fragment_source.is_file():
+            continue
+        vertex_text = expand(vertex_source, shaders_root)
+        fragment_text = expand(fragment_source, shaders_root)
+        produced = set(_VARYING_RE.findall(vertex_text))
+        if not produced:
+            continue
+        # `in` names that are Iris-provided vertex attributes are resolved in the
+        # vertex stage, so only fragment declarations count here.
+        consumed = set(_VARYING_RE.findall(fragment_text))
+        orphans = sorted(produced - consumed)
+        if orphans:
+            listed = ", ".join(orphans)
+            raise ValueError(
+                f"{program}: vertex stage outputs {listed} but the fragment stage never "
+                f"reads it; a change was applied to only one stage of the pair"
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--validator", default="glslangValidator")
@@ -146,6 +207,8 @@ def main() -> int:
     shaders_root = root / "shaders"
     validate_settings(shaders_root)
     validate_iris_shadow_directives(shaders_root)
+    validate_exposed_options_are_used(shaders_root)
+    validate_varying_interfaces(shaders_root)
     overrides: dict[str, str] = {}
     for item in args.define:
         if "=" not in item:

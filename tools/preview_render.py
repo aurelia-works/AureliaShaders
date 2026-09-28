@@ -29,6 +29,12 @@ import glfw
 from OpenGL.GL import *  # noqa: F403
 
 from preview_glsl import VERTEX_UPLOAD, VERTEX_UPLOAD_COMPONENTS, build_source
+from preview_targets import (
+    TargetConfig,
+    collect_target_configs,
+    composite_passes_present,
+    parse_render_targets,
+)
 
 # Iris derives lmcoord as clamp(mc1 / (30/32) - (1/32), 0, 1) in every vertex
 # stage. These are the constants that invert it, so a scene can state the light
@@ -344,11 +350,34 @@ def _make_depth_texture(width: int, height: int) -> int:
     return texture
 
 
-def _make_float_target(width: int, height: int) -> tuple[int, int, int]:
-    """An ``RGBA16F`` colour target plus its depth texture, matching colortex0."""
+_GL_INTERNAL_FORMATS: dict[str, int] = {
+    "RGBA32F": GL_RGBA32F,
+    "RGBA16F": GL_RGBA16F,
+    "RGB16F": GL_RGB16F,
+    "RGBA8": GL_RGBA8,
+    "RGB8": GL_RGB8,
+    "RG8": GL_RG8,
+    "R8": GL_R8,
+}
+
+
+def _internal_format(name: str) -> int:
+    if name not in _GL_INTERNAL_FORMATS:
+        raise ValueError(f"unsupported colortex format: {name}")
+    return _GL_INTERNAL_FORMATS[name]
+
+
+def _make_scene_target(config: TargetConfig, width: int, height: int) -> tuple[int, int, int]:
+    """A colour target in the format the pack's directive declares, plus depth.
+
+    colortex0 is always full-resolution with a depth attachment; the format is
+    read from the ``colortex0Format`` directive rather than hardcoded.
+    """
     color = glGenTextures(1)
     glBindTexture(GL_TEXTURE_2D, color)
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, None)
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, _internal_format(config.fmt), width, height, 0, GL_RGBA, GL_FLOAT, None
+    )
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
@@ -362,6 +391,25 @@ def _make_float_target(width: int, height: int) -> tuple[int, int, int]:
     _require_complete("scene")
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
     return fbo, color, depth
+
+
+def _make_color_target(config: TargetConfig, width: int, height: int) -> tuple[int, int]:
+    """A standalone colour target (no depth) for a composite-style pass output."""
+    color = glGenTextures(1)
+    glBindTexture(GL_TEXTURE_2D, color)
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, _internal_format(config.fmt), width, height, 0, GL_RGBA, GL_FLOAT, None
+    )
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+    fbo = glGenFramebuffers(1)
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0)
+    _require_complete(f"colortex{config.index}")
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    return fbo, color
 
 
 def _make_shadow_target(resolution: int) -> tuple[int, int]:
@@ -616,8 +664,27 @@ class PreviewRenderer:
         self.shadows_enabled = "AURELIA_SHADOWS" not in self.undefined
         self.shadow_resolution = int(self.overrides.get("AURELIA_SHADOW_RESOLUTION", "1024"))
         self.shadow_distance = float(self.overrides.get("AURELIA_SHADOW_DISTANCE", "96"))
-        self.scene_fbo, self.scene_color, self.scene_depth = _make_float_target(width, height)
+        # Colour targets are derived from the pack's own directives, not assumed.
+        self.target_configs = collect_target_configs(shaders_root)
+        if 0 not in self.target_configs:
+            raise RuntimeError("pack declares no colortex0 target")
+        self._targets: dict[int, tuple[int, int, int, int]] = {}
+        self.scene_fbo, self.scene_color, self.scene_depth = _make_scene_target(
+            self.target_configs[0], width, height
+        )
+        self._targets[0] = (self.scene_fbo, self.scene_color, width, height)
         self.shadow_fbo, self.shadow_depth = _make_shadow_target(self.shadow_resolution)
+
+    def _target(self, index: int) -> tuple[int, int, int, int]:
+        """The (fbo, colour, width, height) for a colour target, allocated lazily."""
+        if index not in self._targets:
+            config = self.target_configs.get(index)
+            if config is None:
+                raise RuntimeError(f"colortex{index} is not declared by the pack")
+            width, height = config.size(self.width, self.height)
+            fbo, color = _make_color_target(config, width, height)
+            self._targets[index] = (fbo, color, width, height)
+        return self._targets[index]
 
     def program(self, name: str) -> Program:
         if name not in self._programs:
@@ -631,6 +698,14 @@ class PreviewRenderer:
             glDeleteVertexArrays(1, [vao])
             glDeleteBuffers(2, [vbo, ibo])
         self._geometry.clear()
+        for fbo, color, _, _ in self._targets.values():
+            glDeleteFramebuffers(1, [fbo])
+            glDeleteTextures(1, [color])
+        self._targets.clear()
+        if self.scene_depth:
+            glDeleteTextures(1, [self.scene_depth])
+        glDeleteFramebuffers(1, [self.shadow_fbo])
+        glDeleteTextures(1, [self.shadow_depth])
         for program in self._programs.values():
             program.dispose()
         self.context.close()
@@ -688,7 +763,7 @@ class PreviewRenderer:
         if self.shadows_enabled:
             self._render_shadow(batches, light, atlas_texture, eye, sky)
         self._render_scene(batches, camera, sky, common, view, projection, light, eye, atlas_texture, sun, moon, draw_sky)
-        image = self._final(common)
+        image = self._run_composite_passes(common)
         glFinish()
         elapsed_ms = (time.perf_counter() - started) * 1000.0
 
@@ -895,24 +970,64 @@ class PreviewRenderer:
         self._geometry[key] = (vao, vbo, ibo, batch)
         return vao, vbo, ibo
 
-    def _final(self, common: dict) -> np.ndarray:
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        glViewport(0, 0, self.width, self.height)
+    def _run_composite_passes(self, common: dict) -> np.ndarray:
+        """Run every composite-style program the pack ships, in Iris order.
+
+        ``final`` outputs to the default framebuffer and is the image returned.
+        Any earlier pass (``deferred``/``composite*``) outputs to its declared
+        RENDERTARGETS. A pack with no composite-style program, or one whose last
+        pass is not ``final``, cannot produce a display image.
+        """
+        passes = composite_passes_present(self.shaders_root)
+        if not passes:
+            raise RuntimeError("pack ships no composite-style pass (final.vsh/.fsh required)")
+        if passes[-1] != "final":
+            raise RuntimeError(f"pack ships composite passes but no final: {passes}")
+        image: np.ndarray | None = None
+        for name in passes:
+            image = self._run_composite_pass(name, common)
+        assert image is not None
+        return image
+
+    def _run_composite_pass(self, name: str, common: dict) -> np.ndarray | None:
+        is_final = name == "final"
+        if is_final:
+            glBindFramebuffer(GL_FRAMEBUFFER, 0)
+            glViewport(0, 0, self.width, self.height)
+        else:
+            targets = parse_render_targets(
+                (self.shaders_root / f"{name}.fsh").read_text(encoding="utf-8")
+            )
+            if not targets:
+                raise RuntimeError(f"{name}.fsh declares no RENDERTARGETS")
+            fbo, _, width, height = self._target(targets[0])
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+            glViewport(0, 0, width, height)
+
         glDisable(GL_DEPTH_TEST)
         glDepthMask(GL_TRUE)
         glDisable(GL_BLEND)
         glDisable(GL_CULL_FACE)
-        program = self.program("final")
+        program = self.program(name)
         program.use()
-        for name, value in common.items():
-            program.set(name, value)
-        program.sampler("colortex0", 0, self.scene_color)
-        if self.shadows_enabled:
-            program.sampler("shadowtex0", 1, self.shadow_depth)
+        for uniform_name, value in common.items():
+            program.set(uniform_name, value)
+        self._bind_composite_samplers(program)
         quad = fullscreen_quad()
         self._bind(program, quad, identity(), identity(), None, 1.0)
         glDrawElements(GL_TRIANGLES, quad.index_count, GL_UNSIGNED_INT, ctypes.c_void_p(0))
-        return _read_pixels(self.width, self.height)
+        return _read_pixels(self.width, self.height) if is_final else None
+
+    def _bind_composite_samplers(self, program: Program) -> None:
+        """Bind every colour target and depth/shadow texture a pass may read."""
+        unit = 0
+        for index in sorted(self._targets):
+            program.sampler(f"colortex{index}", unit, self._targets[index][1])
+            unit += 1
+        program.sampler("depthtex0", unit, self.scene_depth)
+        unit += 1
+        if self.shadows_enabled:
+            program.sampler("shadowtex0", unit, self.shadow_depth)
 
 
 def _read_pixels(width: int, height: int) -> np.ndarray:

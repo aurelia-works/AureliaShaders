@@ -46,6 +46,22 @@ Preset selection is read from `shaders.properties`, so `--profile CINEMATIC`
 applies exactly the option values Iris would apply, including which boolean
 options the preset disables.
 
+## Render targets
+
+The harness reads the pack's own render-target directives rather than assuming
+them. `tools/preview_targets.py` parses `/* RENDERTARGETS: ... */`,
+`colortexNFormat`, `colortexNClear` / `colortexNClearColor`, and
+`size.buffer.colortexN`, and `preview_render.py` allocates the declared target
+set and runs every composite-style program (`deferred`, `composite*`, `final`)
+in Iris order, binding each pass's declared targets and its `colortexN` /
+`depthtex0` / `shadowtex0` samplers. `python3 tools/preview_targets.py` runs a
+self-check and dumps the current target set.
+
+At present the pack declares a single `RGBA16F` `colortex0` and one composite
+pass (`final`), so this path reduces exactly to the previous single-target
+behaviour; a phase that adds a second target or a composite pass is exercised by
+the same code.
+
 ## What this proves
 
 - The GLSL compiles, links, and interpolates as declared, on the same driver

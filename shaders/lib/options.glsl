@@ -6,6 +6,11 @@
 #define AURELIA_NIGHT_LIFT 0.16 // [0.08 0.12 0.16 0.20 0.22] Playable night ambient floor
 #define AURELIA_DEBUG_VIEW 0 // [0 1 2 3 4 5 6] Debug output mode
 
+// Phase 3 atmosphere/sky treatment. Boolean so it is revertible from the Iris
+// options screen without a code edit; Potato disables it, the other presets
+// enable it explicitly. Consumed by gbuffers_skybasic from P3.1 on.
+#define AURELIA_ATMOSPHERE // Analytic sky gradient, sun/moon glow and weather response
+
 // Shadow-map allocation and distance are reload-bound Iris options. Adaptive
 // deliberately never changes them at runtime; it only changes PCF tap count.
 #define AURELIA_SHADOW_RESOLUTION 1024 // [512 1024 1536] Shadow-map edge resolution

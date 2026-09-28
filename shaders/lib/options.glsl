@@ -2,6 +2,8 @@
 // Iris options; changing them recompiles the affected program.
 #define AURELIA_DIRECT_LIGHT 1.00 // [0.70 0.85 0.90 1.00 1.15] Direct sunlight strength
 #define AURELIA_SKY_SATURATION 1.05 // [0.85 0.95 1.00 1.05 1.15] Final colour saturation
+#define AURELIA_EXPOSURE 1.00 // [0.85 0.95 1.00 1.05 1.15] Pre-tonemap exposure
+#define AURELIA_CONTRAST 1.00 // [0.95 1.00 1.05 1.10 1.15] Post-tonemap micro-contrast
 #define AURELIA_FOG_DENSITY 1.00 // [0.70 0.85 0.90 1.00 1.20] Atmospheric fog density
 #define AURELIA_NIGHT_LIFT 0.16 // [0.08 0.12 0.16 0.20 0.22] Playable night ambient floor
 #define AURELIA_DEBUG_VIEW 0 // [0 1 2 3 4 5 6] Debug output mode

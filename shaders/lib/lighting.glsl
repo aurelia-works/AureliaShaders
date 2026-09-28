@@ -34,9 +34,13 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     vec3 normal = normalize(worldNormal);
     float ndl = max(dot(normal, lightDir), 0.0);
 
-    // Sky light remains a broad fill with only a restrained blue bias; the tint
-    // and its scale are contract values in lib/look.glsl.
-    vec3 ambientTint = aureliaAmbientTint(skyLight);
+    // Sky light remains a broad fill. The base tint and scale are contract
+    // values; the fill is additionally pulled toward the decoded sky colour so
+    // shadowed surfaces take the sky's hue - cool under a blue noon, warm at
+    // sunset - which is the sky-tinted shade read.
+    vec3 skyTint = aureliaSrgbToLinear(skyColor);
+    vec3 ambientTint = mix(aureliaAmbientTint(skyLight), skyTint,
+                           0.22 * (0.35 + 0.65 * skyLight));
     vec3 coolAmbient = ambientTint * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight);
     float shadow = aureliaShadowVisibility(playerPosition, worldNormal, shadowDir, sunUp, rainStrength);
     vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * shadow);

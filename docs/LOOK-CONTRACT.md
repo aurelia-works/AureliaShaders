@@ -43,7 +43,7 @@ byte-identical — see the P3.0B report). Tuning begins in P3.1.
 | `horizonColor` | `aureliaHorizonColor(fogColorLinear)` | identity — the linear form of `fogColor`, the fog's far-distance limit | final |
 | fog curve | `aureliaFogFactor(dist, density, rain)` | see below | final |
 | weather attenuation | constants below | linear coefficients on `rainStrength` | final |
-| exposure | `AURELIA_EXPOSURE_BASELINE` | `1.0` (identity; `tonemap.glsl` unchanged) | **provisional**, unreferenced in v1 |
+| exposure | `AURELIA_EXPOSURE` option; contract baseline `AURELIA_EXPOSURE_BASELINE` | pre-tonemap multiply; baseline `1.00` | applied in `tonemap.glsl` from P3.2 |
 
 ### Fog curve
 

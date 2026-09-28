@@ -17,9 +17,12 @@ vec3 aureliaAcesFitted(vec3 color) {
 }
 
 vec3 aureliaGrade(vec3 color) {
-    color = aureliaAcesFitted(max(color, 0.0));
+    // Exposure is part of the Look Contract; 1.00 is the identity baseline.
+    color = aureliaAcesFitted(max(color, 0.0) * AURELIA_EXPOSURE);
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = mix(vec3(luma), color, AURELIA_SKY_SATURATION);
+    // Unbound-style micro-contrast about mid-grey. Identity at 1.00.
+    color = (color - 0.5) * AURELIA_CONTRAST + 0.5;
     // Grey axis stays neutral: no split-toning. Complementary-style reference
     // keeps whites/greys on-axis and gets warmth only from light colors.
     return clamp(color, 0.0, 1.0);

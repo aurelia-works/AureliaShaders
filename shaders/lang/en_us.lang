@@ -2,6 +2,7 @@ screen.LIGHTING=Lighting
 screen.SHADOWS=Shadows
 screen.ATMOSPHERE=Atmosphere
 screen.WATER=Water
+screen.POST=Post-processing
 screen.ADAPTIVE=Adaptive Performance
 screen.DEBUG=Debug
 
@@ -9,6 +10,8 @@ option.AURELIA_DIRECT_LIGHT=Direct sunlight
 option.AURELIA_NIGHT_LIFT=Night readability
 option.AURELIA_SKY_SATURATION=Colour saturation
 option.AURELIA_FOG_DENSITY=Fog density
+option.AURELIA_EXPOSURE=Exposure
+option.AURELIA_CONTRAST=Contrast
 option.AURELIA_ATMOSPHERE=Atmosphere
 option.AURELIA_ADAPTIVE=Adaptive performance controller
 option.AURELIA_SHADOWS=Directional shadows
@@ -39,6 +42,8 @@ option.AURELIA_SHADOW_STRENGTH.comment=Only attenuates direct sunlight; cool amb
 option.AURELIA_SHADOW_ADAPTIVE.comment=Adaptive profile only. Uses the smoothed frame-time signal to choose 1, 4, or 9 receiver samples without resizing the map.
 option.AURELIA_WATER_SURFACE.comment=Analytic water: wave-perturbed normal, Fresnel, sky reflection and a sun glint. No extra texture and no extra render target. Potato disables it; turning it off restores the plain gbuffers_terrain appearance of water.
 option.AURELIA_ATMOSPHERE.comment=Analytic atmosphere: a directional sky gradient, sun/moon glow and a weather response, all ALU only with no extra texture or render target. Potato disables it; turning it off restores the flat analytical sky.
+option.AURELIA_EXPOSURE.comment=Scene exposure applied before the filmic curve. 1.00 is the neutral baseline; higher values brighten the whole image.
+option.AURELIA_CONTRAST.comment=Micro-contrast applied about mid-grey after the filmic curve. 1.00 is the neutral baseline; higher values deepen shadows and lift highlights.
 option.AURELIA_DEBUG_VIEW.comment=Lighting shows normal and lightmap data. Frame pacing shows red pressure, green quality, blue reference. Raw shadow map displays depth. Shadow factor displays applied direct-light visibility. Adaptive shadow quality: red=1, amber=4, green=9 taps.
 option.AURELIA_FOLIAGE_TRANSLUCENCY.comment=Wrapped transmission for thin geometry: leaves and grass facing away from the sun pick up a little sunlight when you look sunward, instead of going black. Costs a few ALU ops and no texture read; it does not touch the shadow term.
 option.AURELIA_WETNESS_SPECULAR.comment=A small Blinn highlight that fades in with rain strength and is off in dry weather, so rain reads as wet surfaces. ALU only, no extra texture or render target.

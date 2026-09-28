@@ -35,7 +35,7 @@ float aureliaSunVisibility() {
 
 vec3 aureliaSunColor(float height) {
     float horizon = 1.0 - smoothstep(0.04, 0.34, max(height, 0.0));
-    vec3 noon = vec3(1.00, 0.96, 0.86);
+    vec3 noon = vec3(1.00, 0.97, 0.91);
     vec3 sunset = vec3(1.00, 0.57, 0.31);
     return mix(noon, sunset, horizon);
 }
@@ -61,7 +61,7 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     vec3 coolAmbient = ambientTint * (AURELIA_NIGHT_LIFT + 0.60 * skyLight);
     float shadow = aureliaShadowVisibility(playerPosition, worldNormal, shadowDir, sunUp, rainStrength);
     vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * shadow);
-    vec3 torch = vec3(1.00, 0.58, 0.27) * (blockLight * blockLight * 1.18);
+    vec3 torch = vec3(1.00, 0.66, 0.38) * (blockLight * blockLight * 1.10);
     // Rain suppresses direct sun contrast, but should not turn ambient fill or
     // torch light teal/dim by multiplying the entire accumulated result.
     direct *= 1.0 - 0.38 * rainStrength;

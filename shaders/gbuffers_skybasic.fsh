@@ -44,7 +44,9 @@ void main() {
     vec3 horizon = fogColorLinear;
     // Zenith deepens rather than darkens: the ramp keeps more of the sky's own
     // hue overhead so a saturated sky does not turn into a flat dark cap.
-    vec3 zenith = skyColorLinear * 0.72 + vec3(0.02, 0.04, 0.10);
+    // Keep the offset small and neutral so Potato outdoor sky does not go
+    // neon-blue while terrain stays dark (Complementary keeps one smooth ramp).
+    vec3 zenith = skyColorLinear * 0.82 + vec3(0.010, 0.020, 0.040);
     float ramp = smoothstep(-0.06, 0.62, elevation);
     vec3 sky = mix(horizon, zenith, ramp);
 
@@ -69,7 +71,7 @@ void main() {
     sky = mix(sky, fogColorLinear, 0.45 * rainStrength);
 
     float luma = dot(sky, vec3(0.2126, 0.7152, 0.0722));
-    sky = mix(vec3(luma), sky, 1.08);
+    sky = mix(vec3(luma), sky, 1.00);
     aureliaSceneColor = vec4(sky * aureliaSrgbToLinear(vertexColor.rgb), 1.0);
 #endif
 }

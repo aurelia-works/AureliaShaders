@@ -20,8 +20,7 @@ vec3 aureliaGrade(vec3 color) {
     color = aureliaAcesFitted(max(color, 0.0));
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = mix(vec3(luma), color, AURELIA_SKY_SATURATION);
-    // Very small split-toning: warmth is reserved for highlights; shadows stay cool.
-    color += vec3(0.010, 0.004, -0.004) * smoothstep(0.45, 1.0, luma);
-    color += vec3(-0.003, 0.001, 0.007) * (1.0 - smoothstep(0.05, 0.35, luma));
+    // Grey axis stays neutral: no split-toning. Complementary-style reference
+    // keeps whites/greys on-axis and gets warmth only from light colors.
     return clamp(color, 0.0, 1.0);
 }

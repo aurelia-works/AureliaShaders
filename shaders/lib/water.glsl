@@ -16,7 +16,10 @@
 // yet is not a trade worth making for a moving surface. A static field still
 // breaks up the specular and keeps the surface from reading as a flat mirror.
 
-uniform vec3 skyColor;
+// skyColor, fogColor and the sun direction/uniforms are declared by
+// lib/look.glsl, which lib/lighting.glsl includes before this file. This file
+// deliberately declares no uniforms of its own so the contract stays single-
+// sourced.
 
 // Two crossed waves. The scales and headings are deliberately unrelated so the
 // interference pattern does not read as a regular grid.

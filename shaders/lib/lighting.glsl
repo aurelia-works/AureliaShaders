@@ -1,43 +1,22 @@
 // Original compact forward lighting. Inputs are world/player-space normal,
 // corrected Minecraft lightmap coordinates, and camera-relative view position.
-
-// Iris exposes both the sun and the highest celestial shadow source in view
-// space, each with length 100. Keep analytical daylight on sunPosition so the
-// moon does not become warm "sunlight" after sunset; use shadowLightPosition
-// for the receiver projection because it is exactly the shadow-camera source.
+//
+// Contract quantities (sun direction/height/visibility/colour, ambient tint,
+// fog curve, weather coefficients) live in lib/look.glsl and are included here.
+// This file keeps the forward-lighting composition plus the shadow-receiver
+// direction, which is deliberately NOT part of the visual contract: Iris exposes
+// shadowLightPosition as the highest celestial body (the moon at night), while
+// daylight terms stay on sunPosition, so the two must not be conflated.
+// See docs/LOOK-CONTRACT.md and docs/PHASE2A.md.
 #include "/lib/color.glsl"
+#include "/lib/look.glsl"
 
-uniform vec3 sunPosition;
 uniform vec3 shadowLightPosition;
-uniform vec3 fogColor;
-uniform float rainStrength;
-uniform mat4 gbufferModelViewInverse;
 
 #include "/lib/shadows.glsl"
 
-vec3 aureliaSunDirection() {
-    return normalize(mat3(gbufferModelViewInverse) * sunPosition);
-}
-
 vec3 aureliaShadowDirection() {
     return normalize(mat3(gbufferModelViewInverse) * shadowLightPosition);
-}
-
-float aureliaSunHeight() {
-    return aureliaSunDirection().y;
-}
-
-// Keep the terminator behavior identical for direct lighting and diagnostics:
-// below the horizon the directional source contributes no sunlight.
-float aureliaSunVisibility() {
-    return smoothstep(-0.10, 0.08, aureliaSunHeight());
-}
-
-vec3 aureliaSunColor(float height) {
-    float horizon = 1.0 - smoothstep(0.04, 0.34, max(height, 0.0));
-    vec3 noon = vec3(1.00, 0.97, 0.91);
-    vec3 sunset = vec3(1.00, 0.57, 0.31);
-    return mix(noon, sunset, horizon);
 }
 
 vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 playerPosition) {
@@ -55,16 +34,16 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     vec3 normal = normalize(worldNormal);
     float ndl = max(dot(normal, lightDir), 0.0);
 
-    // Sky light remains a broad fill with only a restrained blue bias. The
-    // Phase 1 blue vector was too strong and made shadowed daylight teal.
-    vec3 ambientTint = mix(vec3(0.50), vec3(0.43, 0.50, 0.62), 0.18 + 0.08 * skyLight);
-    vec3 coolAmbient = ambientTint * (AURELIA_NIGHT_LIFT + 0.60 * skyLight);
+    // Sky light remains a broad fill with only a restrained blue bias; the tint
+    // and its scale are contract values in lib/look.glsl.
+    vec3 ambientTint = aureliaAmbientTint(skyLight);
+    vec3 coolAmbient = ambientTint * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight);
     float shadow = aureliaShadowVisibility(playerPosition, worldNormal, shadowDir, sunUp, rainStrength);
     vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * shadow);
     vec3 torch = vec3(1.00, 0.66, 0.38) * (blockLight * blockLight * 1.10);
     // Rain suppresses direct sun contrast, but should not turn ambient fill or
     // torch light teal/dim by multiplying the entire accumulated result.
-    direct *= 1.0 - 0.38 * rainStrength;
+    direct *= 1.0 - AURELIA_RAIN_SUN_DIM * rainStrength;
 
     // Optional per-pixel terms, both ALU only: no sampler, uniform, render
     // target, or pass. With both options undefined the additions below vanish
@@ -89,7 +68,7 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     float backLit = max(-dot(normal, lightDir), 0.0);
     float sunBehind = max(dot(viewDir, lightDir), 0.0);
     lit += aureliaSunColor(lightDir.y) * (sunUp * skyLight * 0.55
-        * (1.0 - 0.38 * rainStrength) * backLit * sunBehind * sunBehind);
+        * (1.0 - AURELIA_RAIN_SUN_DIM * rainStrength) * backLit * sunBehind * sunBehind);
 #endif
 
     vec3 color = albedo * lit;
@@ -118,12 +97,9 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
 
 vec3 aureliaApplyFog(vec3 color, vec3 viewPosition) {
     float distanceToCamera = length(viewPosition);
-    // An exponential curve keeps nearby blocks crisp and costs no texture read.
-    // At eight chunks, 0.010 caused mid-distance terrain to be replaced by
-    // the supplied blue-green fog. Keep the atmosphere visible but let the
-    // world retain daylight exposure until the far edge.
-    float fog = 1.0 - exp(-distanceToCamera * 0.0035 * AURELIA_FOG_DENSITY);
-    fog = clamp(fog * (0.80 + 0.20 * rainStrength), 0.0, 0.85);
+    // The exponential curve, its density multiplier, rain gain and clamp are
+    // contract values in lib/look.glsl, shared with the sky horizon.
+    float fog = aureliaFogFactor(distanceToCamera, AURELIA_FOG_DENSITY, rainStrength);
     // fogColor is a Minecraft/Iris sRGB color; fog interpolation is linear.
     return mix(color, aureliaSrgbToLinear(fogColor), fog);
 }

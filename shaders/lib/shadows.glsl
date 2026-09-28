@@ -1,6 +1,10 @@
 // Compact forward shadow receiver. It intentionally uses a single manual-depth
 // texture and fixed PCF patterns: no screen-space reconstruction, noise, or
 // temporal history means low bandwidth and stable camera/moving-sun behaviour.
+//
+// This file is included by lib/lighting.glsl immediately after lib/look.glsl, so
+// the contract constants below are in scope. It deliberately does not include
+// look.glsl itself: that would double-declare its uniforms and helpers.
 
 #ifdef AURELIA_SHADOWS
 uniform sampler2D shadowtex0;
@@ -85,7 +89,7 @@ float aureliaShadowVisibility(vec3 playerPosition, vec3 worldNormal, vec3 lightD
     // Fade only the map boundary, and lighten contrast in rain where direct
     // sunlight is already reduced by the forward-light weather term.
     float edgeFade = smoothstep(2.0 * texel.x, 0.025, border);
-    float strength = AURELIA_SHADOW_STRENGTH * (1.0 - 0.35 * rain);
+    float strength = AURELIA_SHADOW_STRENGTH * (1.0 - AURELIA_RAIN_SHADOW_SOFTEN * rain);
     return mix(1.0, mix(1.0, filtered, strength), edgeFade);
 }
 #else

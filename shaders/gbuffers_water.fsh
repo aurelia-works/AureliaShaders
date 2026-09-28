@@ -56,7 +56,7 @@ void main() {
     vec3 lightDir = aureliaSunDirection();
     vec3 glint = aureliaSunColor(lightDir.y)
         * pow(max(dot(reflected, lightDir), 0.0), 180.0)
-        * (sunUp * 3.4 * (1.0 - 0.38 * rainStrength));
+        * (sunUp * 3.4 * (1.0 - AURELIA_RAIN_SUN_DIM * rainStrength));
 
     // Reflection is strongest at grazing angles, so it is weighted down from
     // full Fresnel; a full mirror at the shoreline looked like sheet metal.

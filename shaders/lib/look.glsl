@@ -96,16 +96,32 @@ vec3 aureliaHorizonColor(vec3 fogColorLinear) {
 }
 
 // --- Fog curve --------------------------------------------------------------
-
-const float AURELIA_FOG_DENSITY_K  = 0.0035;
+// The band/mud problem came from a single global exponential: it hit hard at
+// mid-range and clamped at 0.85, so any distant terrain was painted flat.
+// The curve is gentler and the clamp is lower, so the far edge still shows
+// terrain form through the haze (the MakeUp/Reimagined "depth" read) while
+// nearby blocks stay crisp.
+const float AURELIA_FOG_DENSITY_K  = 0.0026;
 const float AURELIA_FOG_RAIN_MIN   = 0.80;
 const float AURELIA_FOG_RAIN_RANGE = 0.20;
-const float AURELIA_FOG_MAX        = 0.85;
+const float AURELIA_FOG_MAX        = 0.78;
 
 float aureliaFogFactor(float distanceToCamera, float density, float rain) {
     float fog = 1.0 - exp(-distanceToCamera * AURELIA_FOG_DENSITY_K * density);
     return clamp(fog * (AURELIA_FOG_RAIN_MIN + AURELIA_FOG_RAIN_RANGE * rain),
                  0.0, AURELIA_FOG_MAX);
+}
+
+// Fog a linear scene colour. Every pass composites weather/sky/terrain fog the
+// same way, so the apply step lives next to the curve it depends on: fogColor
+// is a Minecraft/Iris sRGB colour, and fog interpolation is linear. This is the
+// behaviour-identical function previously defined only in lib/lighting.glsl;
+// gbuffers_weather and gbuffers_clouds consume it directly.
+vec3 aureliaApplyFogContract(vec3 color, vec3 viewPosition, float density, float rain) {
+    float distanceToCamera = length(viewPosition);
+    // fogColor is a Minecraft/Iris sRGB color; fog interpolation is linear.
+    return mix(color, aureliaSrgbToLinear(fogColor),
+               aureliaFogFactor(distanceToCamera, density, rain));
 }
 
 // --- Weather attenuation ----------------------------------------------------

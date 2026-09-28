@@ -34,15 +34,20 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     vec3 normal = normalize(worldNormal);
     float ndl = max(dot(normal, lightDir), 0.0);
 
-    // Sky light remains a broad fill. The base tint and scale are contract
-    // values; the fill is additionally pulled toward the decoded sky colour so
-    // shadowed surfaces take the sky's hue - cool under a blue noon, warm at
-    // sunset - which is the sky-tinted shade read.
-    vec3 skyTint = aureliaSrgbToLinear(skyColor);
-    vec3 ambientTint = mix(aureliaAmbientTint(skyLight), skyTint,
-                           0.22 * (0.35 + 0.65 * skyLight));
-    vec3 coolAmbient = ambientTint * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight);
-    float shadow = aureliaShadowVisibility(playerPosition, worldNormal, shadowDir, sunUp, rainStrength);
+    // Sky light remains a broad fill: a neutral base with only a restrained
+    // cool bias. The strong teal cast in the earlier grade came from blending
+    // the fill toward the decoded sky colour - blue ambient landed on green
+    // albedo and tinted the whole world. That is reverted: the ambient stays
+    // the contract's neutral-with-cool-bias tint, and any sky-tinted shading
+    // is deliberately not carried by the ambient term at all.
+    vec3 ambientTint = aureliaAmbientTint(skyLight);
+    // Two fills: the existing sky-driven term, plus a small constant floor.
+    // The floor is what stops shadowed and overhang faces crushing to black:
+    // the steep ACES curve plus AURELIA_CONTRAST deepens anything already
+    // below mid-grey, so a purely proportional fill cannot protect them.
+    vec3 coolAmbient = ambientTint
+        * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight)
+        + vec3(0.030, 0.032, 0.036);    float shadow = aureliaShadowVisibility(playerPosition, worldNormal, shadowDir, sunUp, rainStrength);
     vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * shadow);
     vec3 torch = vec3(1.00, 0.66, 0.38) * (blockLight * blockLight * 1.10);
     // Rain suppresses direct sun contrast, but should not turn ambient fill or
@@ -99,11 +104,8 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     return color;
 }
 
+// Fog application lives in lib/look.glsl next to the curve itself, so every
+// pass (terrain, entities, water, weather, clouds) composites identically.
 vec3 aureliaApplyFog(vec3 color, vec3 viewPosition) {
-    float distanceToCamera = length(viewPosition);
-    // The exponential curve, its density multiplier, rain gain and clamp are
-    // contract values in lib/look.glsl, shared with the sky horizon.
-    float fog = aureliaFogFactor(distanceToCamera, AURELIA_FOG_DENSITY, rainStrength);
-    // fogColor is a Minecraft/Iris sRGB color; fog interpolation is linear.
-    return mix(color, aureliaSrgbToLinear(fogColor), fog);
+    return aureliaApplyFogContract(color, viewPosition, AURELIA_FOG_DENSITY, rainStrength);
 }

@@ -34,12 +34,12 @@ byte-identical — see the P3.0B report). Tuning begins in P3.1.
 | `sunDirection` | `aureliaSunDirection()` | `normalize(mat3(gbufferModelViewInverse) * sunPosition)` | final |
 | `sunHeight` | `aureliaSunHeight()` | `aureliaSunDirection().y` | final |
 | `sunUp` | `aureliaSunVisibility()` | `smoothstep(-0.10, 0.08, sunHeight)` | final |
-| `nightFactor` | `aureliaNightFactor()` | `1 - smoothstep(-0.15, 0.05, sunHeight)` | **provisional**, unreferenced in v1 |
+| `nightFactor` | `aureliaNightFactor()` | `1 - smoothstep(-0.15, 0.05, sunHeight)` | defined; not consumed by the P3.1 atmosphere (which drives dusk from `horizonFactor`); reserved for P3.2+ |
 | horizon factor | `aureliaHorizonFactor(height)` | `1 - smoothstep(0.04, 0.34, max(height,0))` | final |
 | `sunColor` | `aureliaSunColor(height)` | `mix(noon(1.00,0.97,0.91), sunset(1.00,0.57,0.31), horizonFactor)` | final |
 | ambient tint | `aureliaAmbientTint(skyLight)` | `mix(neutral(0.50), sky(0.43,0.50,0.62), 0.18 + 0.08*skyLight)` | final |
 | ambient sky scale | `AURELIA_AMBIENT_SKY_SCALE` | `0.60` | final |
-| `zenithColor` | `aureliaZenithColor(skyColorLinear)` | `skyColorLinear * 0.82 + (0.010, 0.020, 0.040)` | **provisional** starting definition; P3.1 replaces the shape |
+| `zenithColor` | `aureliaZenithColor(skyColorLinear)` | `skyColorLinear * 0.82 + (0.010, 0.020, 0.040)` | base of the P3.1 atmosphere gradient and the no-atmosphere fallback; still a tuning surface |
 | `horizonColor` | `aureliaHorizonColor(fogColorLinear)` | identity — the linear form of `fogColor`, the fog's far-distance limit | final |
 | fog curve | `aureliaFogFactor(dist, density, rain)` | see below | final |
 | weather attenuation | constants below | linear coefficients on `rainStrength` | final |

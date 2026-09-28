@@ -3,6 +3,7 @@
 #include "/lib/options.glsl"
 #include "/lib/color.glsl"
 #include "/lib/look.glsl"
+#include "/lib/sky.glsl"
 
 // sunPosition, not shadowLightPosition. Iris documents shadowLightPosition as
 // the *highest* celestial body, which is the moon at night, so deriving a sky
@@ -28,8 +29,14 @@ void main() {
     // giveaway of a pack that never treats its sky.
     vec3 skyColorLinear = aureliaSrgbToLinear(skyColor);
     vec3 fogColorLinear = aureliaSrgbToLinear(fogColor);
-
     vec3 direction = normalize(viewDirection);
+
+#ifdef AURELIA_ATMOSPHERE
+    // Directional atmosphere: see lib/sky.glsl. ALU only, no texture or target.
+    vec3 sky = aureliaAtmosphereSky(
+        skyColorLinear, fogColorLinear, direction, aureliaSunDirection(), rainStrength);
+#else
+    // Revertible fallback: the flat analytical ramp used before P3.1.
     float elevation = clamp(direction.y, -1.0, 1.0);
 
     // The horizon has to agree with what aureliaApplyFog resolves to at maximum
@@ -39,8 +46,6 @@ void main() {
     vec3 horizon = aureliaHorizonColor(fogColorLinear);
     // Zenith deepens rather than darkens: the ramp keeps more of the sky's own
     // hue overhead so a saturated sky does not turn into a flat dark cap.
-    // The scale and offset are the contract's PROVISIONAL zenith starting
-    // definition (lib/look.glsl); P3.1 replaces the shape.
     vec3 zenith = aureliaZenithColor(skyColorLinear);
     float ramp = smoothstep(-0.06, 0.62, elevation);
     vec3 sky = mix(horizon, zenith, ramp);
@@ -64,6 +69,7 @@ void main() {
     // Rain flattens the ramp toward the fog colour, which is what an overcast
     // sky does, instead of leaving a clear gradient over a dimmed sun.
     sky = mix(sky, fogColorLinear, AURELIA_RAIN_SKY_FLATTEN * rainStrength);
+#endif
 
     float luma = dot(sky, vec3(0.2126, 0.7152, 0.0722));
     sky = mix(vec3(luma), sky, 1.00);

@@ -78,8 +78,9 @@ vec3 aureliaAmbientTint(float skyLight) {
                AURELIA_AMBIENT_SKY_MIX_BASE + AURELIA_AMBIENT_SKY_MIX_RANGE * skyLight);
 }
 
-// Zenith starting definition. PROVISIONAL: P3.1 will replace this shape; v1 is
-// the exact expression previously inline in gbuffers_skybasic.fsh.
+// Zenith gradient base. P3.1 uses this as the base of the atmosphere gradient
+// (lib/sky.glsl blends it toward a night blue as the sun drops) and the
+// no-atmosphere fallback still uses it unchanged. Still a tuning surface.
 const float AURELIA_ZENITH_SCALE  = 0.82;
 const vec3  AURELIA_ZENITH_OFFSET = vec3(0.010, 0.020, 0.040);
 

@@ -17,12 +17,14 @@ The assertions pin the specified behavior, not exact pixels:
 
 Method: stars are single-pixel spikes, while clouds, the moon glow and the
 dome gradient are all broad. Subtracting a 5x5 median removes everything
-broad, leaving point contrast; the 99th percentile of that residual (`hp99`)
-tracks the star field. The analysis window is the top half of the `nightsky`
+broad, leaving point contrast; the COUNT of residual spikes above 0.02 luma
+on non-foliage pixels tracks the star field. (A 99th percentile was used
+before; stars cover well under 1% of the frame, so it was blind to them and
+was really measuring a tree's leaf edges in the window, which brighter
+in-game-tuned sunlight then pushed past the daylight ceiling.) The analysis window is the top half of the `nightsky`
 camera frame (elevations the midnight moon never reaches at the sampled
-dusk times), and all samples run dry (`rain = 0`). Thresholds below carry
-~2x headroom over the measured BALANCED/seed-3 baseline, recorded in the
-prints; they are ceilings/ratios on behavior, not fitted pixel values.
+dusk times), and all samples run dry (`rain = 0`). Measured BALANCED/seed-3 baseline: day 0, t=0.52 518, night 657 points.
+Thresholds are behavioral floors/ceilings, not fitted pixel values.
 
 Run: tools/.venv/bin/python tools/test_sky_stars.py
 """
@@ -48,11 +50,11 @@ DUSK_SERIES = (0.50, 0.51, 0.52, 0.53, 0.55)
 
 # Ceiling on daylight point contrast (measured ~0.010); the dusk plateau
 # measures ~0.045, so this leaves 2x headroom below any star field.
-DAY_HP99_MAX = 0.020
+DAY_POINTS_MAX = 5           # no star points by day
 # Full-night point contrast must exceed this multiple of the daylight floor.
-NIGHT_DAY_RATIO_MIN = 3.0
+NIGHT_POINTS_MIN = 200        # a real star field at night
 # Allowed dip between consecutive dusk samples (8-bit quantization noise).
-MONOTONIC_EPS = 0.002
+MONOTONIC_EPS = 20            # points; tolerates sub-pixel jitter
 
 
 def luma(image: np.ndarray) -> np.ndarray:
@@ -77,8 +79,23 @@ def point_contrast(renderer: PreviewRenderer, atlas: np.ndarray, batches: dict,
                    time: float) -> float:
     image, _ = renderer.render(batches, atlas, camera_for("nightsky"),
                                Sky(time=time, rain=0.0))
+    top_rgb = image[: image.shape[0] // 2, :, :3].astype(np.float32)
     top = luma(image)[: image.shape[0] // 2, :]
-    return float(np.percentile(top - median_filter(top), 99))
+    hp = top - median_filter(top)
+    # Exclude foliage. A seed-3 tree reaches into the window, and its sharp
+    # leaf edges read as "points" to a high-pass; brighter in-game-tuned
+    # sunlight raised that edge contrast past the daylight ceiling with no
+    # star anywhere. Foliage = green-dominant pixels, grown by the median
+    # radius so leaf boundaries go too. Stars (near-white) and the blue/navy
+    # sky both stay in.
+    foliage = (top_rgb[..., 1] > top_rgb[..., 2] + 4.0) & (top_rgb[..., 1] > top_rgb[..., 0])
+    grown = foliage.copy()
+    r = 3
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            grown |= np.roll(np.roll(foliage, dy, axis=0), dx, axis=1)
+    eroded = ~grown
+    return float(np.count_nonzero(hp[eroded] > 0.02))
 
 
 def main() -> int:
@@ -88,24 +105,23 @@ def main() -> int:
     renderer = PreviewRenderer(SHADERS_ROOT, overrides=overrides, undefined=undefined)
 
     day = point_contrast(renderer, atlas, batches, DAY_TIME)
-    print(f"day t={DAY_TIME}: hp99={day:.4f} (ceiling {DAY_HP99_MAX})")
-    if day > DAY_HP99_MAX:
-        failures.append(f"daylight star points visible (hp99 {day:.4f})")
+    print(f"day t={DAY_TIME}: points={day:.0f} (ceiling {DAY_POINTS_MAX})")
+    if day > DAY_POINTS_MAX:
+        failures.append(f"daylight star points visible ({day:.0f})")
 
     series = []
     for t in DUSK_SERIES:
         v = point_contrast(renderer, atlas, batches, t)
         series.append(v)
-        print(f"dusk t={t}: hp99={v:.4f}")
+        print(f"dusk t={t}: points={v:.0f}")
     for prev, cur, t in zip(series, series[1:], DUSK_SERIES[1:]):
         if cur < prev - MONOTONIC_EPS:
             failures.append(
-                f"star fade not monotonic at t={t} ({prev:.4f} -> {cur:.4f})")
+                f"star fade not monotonic at t={t} ({prev:.0f} -> {cur:.0f})")
 
     night = series[-1]
-    print(f"night/day point-contrast ratio: {night / max(day, 1e-6):.2f}x "
-          f"(minimum {NIGHT_DAY_RATIO_MIN}x)")
-    if night < NIGHT_DAY_RATIO_MIN * max(day, 1e-6):
+    print(f"night points: {night:.0f} (minimum {NIGHT_POINTS_MIN})")
+    if night < NIGHT_POINTS_MIN:
         failures.append("star field never rises above the daylight floor")
 
     if failures:

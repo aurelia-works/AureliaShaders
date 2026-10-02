@@ -283,6 +283,8 @@ vec3 aureliaUnderwaterColor(vec3 direction, float rain) {
 // the fog palette with camera pitch/yaw, because the palette is world-space.
 vec3 aureliaApplyFogContract(vec3 color, vec3 playerPosition, float density, float rain) {
     vec3 direction = normalize(playerPosition);
+    // Nether air is thick: denser haze into its own fog colour.
+    density *= hasCeiling ? 3.0 : 1.0;
 #ifdef AURELIA_WATER_UNDERWATER
     // Submerged: every fragment in view is seen through the water column, so
     // fade toward the underwater atmosphere on its own denser curve. Lava

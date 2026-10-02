@@ -27,7 +27,7 @@ vec3 aureliaAcesFitted(vec3 color) {
 // the user-facing knobs (exposure, saturation, contrast) stay identity at 1.00.
 const vec3  AURELIA_GRADE_WARM_HIGHLIGHT = vec3(1.045, 1.000, 0.935); // linear gain at white
 const vec3  AURELIA_GRADE_COOL_SHADOW    = vec3(0.0004, 0.0006, 0.0013); // linear lift at black
-const float AURELIA_GRADE_VIBRANCE       = 0.22; // extra saturation for dull colours only
+const float AURELIA_GRADE_VIBRANCE       = 0.12; // extra saturation for dull colours only (0.22 pushed sunlit foliage neon in game)
 const float AURELIA_GRADE_CONTRAST_PIVOT = 0.46; // sRGB-encoded mid grey
 
 // Returns the DISPLAY-ENCODED (sRGB) graded colour, ready for the 8-bit

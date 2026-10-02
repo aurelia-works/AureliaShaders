@@ -11,8 +11,13 @@ uniform float aureliaSmoothedFrameTime;
 uniform float aureliaAdaptiveQuality;
 uniform float aureliaAdaptiveShadowFilterSamples;
 
-#ifdef AURELIA_DISTANT_RAIN
 uniform sampler2D depthtex0;
+// Nether: no sky geometry is drawn, so open space kept the black colortex0
+// clear (seen in game). Read only inside the hasCeiling branch below, so the
+// Overworld pays no fetch.
+uniform bool hasCeiling;
+
+#ifdef AURELIA_DISTANT_RAIN
 uniform float frameTimeCounter;
 uniform mat4 gbufferProjectionInverse;
 #endif
@@ -48,6 +53,7 @@ void main() {
 
 #if AURELIA_DEBUG_VIEW == 0
     color = scene.rgb;
+    if (hasCeiling && texture(depthtex0, texcoord).r >= 1.0) color = aureliaFogColorLinear();
     #ifdef AURELIA_DISTANT_RAIN
         // The curtain composites into the LINEAR scene before grading, so
         // distant rain goes through the same tonemap/sRGB as everything else.

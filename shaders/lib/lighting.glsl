@@ -86,14 +86,17 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     // The daylight part of the sky fill fades to a restrained residual at
     // night - moonlight below replaces it as the directional source - because
     // leaving it up made night terrain read as a dim overcast afternoon.
-    float dayFill = mix(0.40, 1.0, sunUp);
+    // Night residual 0.22 keeps the night fill where it was (0.80 * 0.22 equals
+    // the old 0.44 * 0.40) after the daytime sky scale was raised.
+    float dayFill = mix(0.22, 1.0, sunUp);
     vec3 coolAmbient = ambientTint
         * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight * dayFill
            * (1.0 + 0.08 * rainStrength))
         + vec3(0.055, 0.057, 0.063);
+    if (hasCeiling) coolAmbient += AURELIA_NETHER_AMBIENT;
     vec2 shadowTerms = aureliaShadowTerms(playerPosition, normal, skyLight);
     float shadow = shadowTerms.x;
-    vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * shadow);
+    vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * AURELIA_SUN_INTENSITY * shadow);
     vec3 torch = vec3(1.00, 0.66, 0.38) * (blockLight * blockLight * 1.10);
     // Rain suppresses direct sun contrast and saturation of the accumulated
     // light: overcast light is desaturated and soft. The desaturation is at
@@ -155,6 +158,10 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     // is a surface reflection, so it is added after the albedo product.
     float wetness = smoothstep(0.05, 0.70, rainStrength);
     if (wetness > 0.0) {
+        // Wet surfaces read darker and richer first (water fills the
+        // micro-surface), only outdoors where rain lands. In game the old
+        // 0.50 sheen alone frosted every up-facing leaf and grass top mint.
+        color *= 1.0 - 0.18 * wetness * skyLight;
         // Surface-to-eye is -viewDir, so the Blinn half vector is L + V.
         vec3 halfDir = normalize(lightDir - viewDir);
         float lobe = max(dot(normal, halfDir), 0.0);
@@ -162,7 +169,7 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
         lobe *= lobe;
         lobe *= lobe;
         color += vec3(0.70, 0.78, 0.92)
-            * (wetness * sunUp * skyLight * ndl * shadow * lobe * 0.50);
+            * (wetness * sunUp * skyLight * ndl * shadow * lobe * 0.10);
     }
 #endif
 

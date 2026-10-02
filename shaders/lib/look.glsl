@@ -124,13 +124,24 @@ vec3 aureliaSunColor(float height) {
     return mix(noon, sunset, horizon);
 }
 
+// Direct-sun irradiance relative to the sky fill. In-game against the
+// Complementary reference (2026-10-02) sunlit ground was ~2x too dark and read
+// teal because the cool fill dominated; the filmic curve has the headroom.
+const float AURELIA_SUN_INTENSITY = 1.8;
+
+// Nether fill (hasCeiling): the dimension has no sky light, so without this
+// the only fill was the night floor and the Nether rendered near-black in game.
+const vec3 AURELIA_NETHER_AMBIENT = vec3(0.26, 0.15, 0.11);
+
 // --- Ambient / sky colours (linear) -----------------------------------------
 
 const vec3  AURELIA_AMBIENT_NEUTRAL       = vec3(0.50);
 const vec3  AURELIA_AMBIENT_SKY           = vec3(0.43, 0.50, 0.62);
-const float AURELIA_AMBIENT_SKY_MIX_BASE  = 0.18;
+const float AURELIA_AMBIENT_SKY_MIX_BASE  = 0.12;
 const float AURELIA_AMBIENT_SKY_MIX_RANGE = 0.08;
-const float AURELIA_AMBIENT_SKY_SCALE     = 0.44;
+// Raised with AURELIA_SUN_INTENSITY (in-game tuning): sun-averted faces sat at
+// ~20% of lit tops, far harsher than Complementary's ~40-50%.
+const float AURELIA_AMBIENT_SKY_SCALE     = 0.80;
 
 vec3 aureliaAmbientTint(float skyLight) {
     return mix(AURELIA_AMBIENT_NEUTRAL, AURELIA_AMBIENT_SKY,
@@ -159,15 +170,24 @@ vec3 aureliaHorizonColor(vec3 fogColorLinear) {
 // The curve is gentler and the clamp is lower, so the far edge still shows
 // terrain form through the haze (the MakeUp/Reimagined "depth" read) while
 // nearby blocks stay crisp.
-const float AURELIA_FOG_DENSITY_K  = 0.0045;
+uniform float far; // Iris: render distance in blocks
+// In-game tuning (2026-10-02, render distance 8): 0.0045 washed mid-distance
+// terrain out long before the Complementary reference did. The atmosphere is
+// now lighter, and the hard work of hiding the chunk edge moved to a border
+// term tied to `far`, like vanilla's own fog.
+const float AURELIA_FOG_DENSITY_K  = 0.0022;
 const float AURELIA_FOG_RAIN_MIN   = 0.80;
 const float AURELIA_FOG_RAIN_RANGE = 0.20;
 const float AURELIA_FOG_MAX        = 0.78;
 
 float aureliaFogFactor(float distanceToCamera, float density, float rain) {
     float fog = 1.0 - exp(-distanceToCamera * AURELIA_FOG_DENSITY_K * density);
-    return clamp(fog * (AURELIA_FOG_RAIN_MIN + AURELIA_FOG_RAIN_RANGE * rain),
-                 0.0, AURELIA_FOG_MAX);
+    fog = clamp(fog * (AURELIA_FOG_RAIN_MIN + AURELIA_FOG_RAIN_RANGE * rain),
+                0.0, AURELIA_FOG_MAX);
+    // Border fog over the last 25% of render distance: the world's edge
+    // resolves fully into the sky. Off when `far` is unknown (offline tools).
+    float border = far > 0.0 ? smoothstep(0.75 * far, far, distanceToCamera) : 0.0;
+    return max(fog, border);
 }
 
 // --- Underwater fog curve ---------------------------------------------------
@@ -198,7 +218,7 @@ float aureliaUnderwaterFogFactor(float distanceToCamera, float rain) {
 
 // --- Weather attenuation ----------------------------------------------------
 
-const float AURELIA_RAIN_SUN_DIM       = 0.38; // direct sun and its water glint
+const float AURELIA_RAIN_SUN_DIM       = 0.72; // direct sun and its water glint (raised with AURELIA_SUN_INTENSITY: 0.38 left rainy tops sunlit, seen in game)
 const float AURELIA_RAIN_SKY_FLATTEN   = 0.45; // sky ramp lerp toward horizon
 const float AURELIA_RAIN_GLOW_DIM      = 0.55; // solar glow dimming
 const float AURELIA_RAIN_SHADOW_SOFTEN = 0.35; // shadow-strength reduction

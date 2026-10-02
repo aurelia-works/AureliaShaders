@@ -28,10 +28,12 @@ OPTION = re.compile(r"^#define\s+(AURELIA_[A-Z_]+)(?:\s+([^/\s]+))?\s*//\s*\[([^
 BOOLEAN_OPTION = re.compile(r"^(?://)?#define\s+(AURELIA_[A-Z_]+)\s*//")
 PROFILE = re.compile(r"^profile\.([A-Z]+)\s*=\s*(.*)$")
 # Interpolated stage variables: `out` in a vertex stage, `in` in a fragment stage.
-_VARYING_RE = re.compile(
-    r"^\s*(?:flat\s+|smooth\s+|noperspective\s+)?(?:out|in)\s+(?:lowp\s+|mediump\s+|highp\s+)?\w+\s+(\w+)\s*;",
-    re.MULTILINE,
-)
+_VARYING_PREFIX = r"^\s*(?:flat\s+|smooth\s+|noperspective\s+)?"
+_VARYING_SUFFIX = r"\s+(?:lowp\s+|mediump\s+|highp\s+)?\w+\s+(\w+)\s*;"
+# A vertex stage's `in` declarations are attributes (gl_Vertex, mc_Entity, ...),
+# not varyings, so the vertex side matches `out` only and the fragment side `in`.
+_VERTEX_OUT_RE = re.compile(_VARYING_PREFIX + "out" + _VARYING_SUFFIX, re.MULTILINE)
+_FRAGMENT_IN_RE = re.compile(_VARYING_PREFIX + "in" + _VARYING_SUFFIX, re.MULTILINE)
 SHADOW_DISTANCE = re.compile(
     r"^\s*const\s+float\s+shadowDistance\s*=\s*([^;]+);", re.MULTILINE
 )
@@ -373,10 +375,8 @@ def validate_varying_interfaces(shaders_root: Path) -> None:
         fragment_source = shaders_root / f"{program}.fsh"
         if not fragment_source.is_file():
             continue
-        produced = set(_VARYING_RE.findall(expand(vertex_source, shaders_root)))
-        # `in` names that are Iris-provided vertex attributes are resolved in the
-        # vertex stage, so only fragment declarations count here.
-        consumed = set(_VARYING_RE.findall(expand(fragment_source, shaders_root)))
+        produced = set(_VERTEX_OUT_RE.findall(expand(vertex_source, shaders_root)))
+        consumed = set(_FRAGMENT_IN_RE.findall(expand(fragment_source, shaders_root)))
         orphans = sorted(produced - consumed)
         if orphans:
             raise ValueError(

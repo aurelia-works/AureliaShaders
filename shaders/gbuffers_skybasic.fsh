@@ -16,11 +16,27 @@
 uniform mat4 gbufferProjectionInverse;
 uniform float viewWidth;
 uniform float viewHeight;
+uniform int renderStage;
+
+// Iris injects MC_RENDER_STAGE_*; fallbacks (Iris 1.7 ordinals) only serve the
+// offline validator and preview, which never draw these stages.
+#ifndef MC_RENDER_STAGE_SUNSET
+    #define MC_RENDER_STAGE_SUNSET 2
+#endif
+#ifndef MC_RENDER_STAGE_STARS
+    #define MC_RENDER_STAGE_STARS 6
+#endif
 
 /* RENDERTARGETS: 0 */
 layout(location = 0) out vec4 aureliaSceneColor;
 
 void main() {
+    // Vanilla's star quads are drawn ADDITIVELY through this program, so
+    // writing the sky colour there stacked a second copy of the dome on every
+    // star: bright dots in a daylight/sunset sky (seen in game at time 12000).
+    // The sunrise fan is likewise redundant. The analytic dome already holds
+    // both, so neither draw contributes anything.
+    if (renderStage == MC_RENDER_STAGE_STARS || renderStage == MC_RENDER_STAGE_SUNSET) discard;
 #if AURELIA_DEBUG_VIEW == 5
     // The analytical sky is outside the shadow receiver set.
     aureliaSceneColor = vec4(1.0);

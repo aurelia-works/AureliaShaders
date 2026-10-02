@@ -54,7 +54,10 @@ mirrors it in Java in P3.7.
 
 ## Tooling
 
-- `tools/validate_shaderpack.py` — expands Iris includes and validates every
-  `*.vsh`/`*.fsh` pair and preset.
-- `tools/preview.py` — offline grading/preview. P3.0C extends it to multi-target.
+- `tools/validate_shaderpack.py` — expands Iris includes and compiles and links
+  every `*.vsh`/`*.fsh` pair under the defaults, every preset, every boolean and
+  option value toggled alone, the shadow-filter by adaptive grid and the
+  experimental distant-rain curtain; also checks screens, lang, profiles and
+  custom-uniform expressions.
+- `tools/preview.py` — offline grading/preview (multi-target aware).
 - In-game Iris 1.20.1 check on a real Overworld — required for any visual claim.

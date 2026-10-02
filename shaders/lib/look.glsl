@@ -3,9 +3,8 @@
 // ============================================================================
 //
 // Single source of truth for the visual quantities shared by Aurelia Shaders
-// and, later, Aurelia LOD. This is a contracts/deduplication file: every value
-// and expression below is behaviour-identical to the code it replaces. It is
-// not the place to tune the look; tuning starts in P3.1.
+// and, later, Aurelia LOD. Colour and curve constants here are the locked look
+// (P3.2): change them deliberately and update docs/LOOK-CONTRACT.md with them.
 //
 // Binding rules
 //   - Directions are world/player-space unit vectors. Player space is
@@ -20,9 +19,6 @@
 //   - Aurelia LOD mirrors this contract in Java in P3.7. Nothing here is read
 //     by the LOD yet.
 //
-// PROVISIONAL items are named now for P3.1 to tune and are intentionally
-// unreferenced in v1.
-
 // Contract uniform inputs (declared once, here).
 uniform vec3 sunPosition;             // view space, length 100
 uniform vec3 moonPosition;            // view space, length 100
@@ -111,11 +107,6 @@ float aureliaSunVisibility() {
     return smoothstep(-0.10, 0.08, aureliaSunHeight());
 }
 
-// Day -> night weight. PROVISIONAL: named for P3.1, unreferenced in v1.
-float aureliaNightFactor() {
-    return 1.0 - smoothstep(-0.15, 0.05, aureliaSunHeight());
-}
-
 // Horizon warmth factor from sun height. v1 value.
 float aureliaHorizonFactor(float height) {
     // Warm band spans up to ~28 deg of sun elevation, not 19: dawn and golden
@@ -146,9 +137,8 @@ vec3 aureliaAmbientTint(float skyLight) {
                AURELIA_AMBIENT_SKY_MIX_BASE + AURELIA_AMBIENT_SKY_MIX_RANGE * skyLight);
 }
 
-// Zenith gradient base. P3.1 uses this as the base of the atmosphere gradient
-// (lib/sky.glsl blends it toward a night blue as the sun drops) and the
-// no-atmosphere fallback still uses it unchanged. Still a tuning surface.
+// Zenith gradient base. lib/sky.glsl blends it toward a night blue as the sun
+// drops; the no-atmosphere fallback uses it unchanged.
 const float AURELIA_ZENITH_SCALE  = 0.74;
 const vec3  AURELIA_ZENITH_OFFSET = vec3(0.010, 0.020, 0.040);
 
@@ -212,9 +202,3 @@ const float AURELIA_RAIN_SUN_DIM       = 0.38; // direct sun and its water glint
 const float AURELIA_RAIN_SKY_FLATTEN   = 0.45; // sky ramp lerp toward horizon
 const float AURELIA_RAIN_GLOW_DIM      = 0.55; // solar glow dimming
 const float AURELIA_RAIN_SHADOW_SOFTEN = 0.35; // shadow-strength reduction
-
-// --- Exposure ---------------------------------------------------------------
-// Exposure is applied in lib/tonemap.glsl through the AURELIA_EXPOSURE Iris
-// option (P3.2). This constant remains the documented identity baseline the
-// option's value list is built around; it is not read at runtime.
-const float AURELIA_EXPOSURE_BASELINE = 1.0;

@@ -33,7 +33,10 @@
 // The controller's only runtime consumer is the PCF budget, so AURELIA_ADAPTIVE
 // off means a fixed filter. (Iris lists options from the #define lines above;
 // this #undef is invisible to it and only applies after the values are set.)
-#if !defined(AURELIA_ADAPTIVE) && defined(AURELIA_SHADOW_ADAPTIVE)
+// Plain #ifndef on purpose: Iris only registers a boolean option it sees in a
+// simple #ifdef/#ifndef test; `#if !defined(X) && ...` hid this toggle from
+// the menu in game ("Unable to resolve shader pack option menu element").
+#ifndef AURELIA_ADAPTIVE
     #undef AURELIA_SHADOW_ADAPTIVE
 #endif
 

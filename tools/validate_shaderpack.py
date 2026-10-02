@@ -328,11 +328,13 @@ def validate_exposed_options_are_used(shaders_root: Path, options: PackOptions) 
     # comments removed (a name in a comment is not a use).
     readable: set[str] = set()
     option_uses: set[str] = set()
+    plain_tests: set[str] = set()
     define_line = re.compile(r"^\s*#define\s+(AURELIA_[A-Z_]+)\b[^\n]*$", re.MULTILINE)
     for source in sorted(shaders_root.glob("*.vsh")) + sorted(shaders_root.glob("*.fsh")):
         text = strip_comments(expand(source, shaders_root))
         readable.update(re.findall(r"\b([A-Za-z_]\w*)\b", text))
         option_uses.update(re.findall(r"\b(AURELIA_[A-Z_]+)\b", define_line.sub("", text)))
+        plain_tests.update(re.findall(r"^\s*#\s*ifn?def\s+(AURELIA_[A-Z_]+)\b", text, re.MULTILINE))
 
     unused = sorted(name for name in declared if name not in readable)
     if unused:
@@ -346,6 +348,15 @@ def validate_exposed_options_are_used(shaders_root: Path, options: PackOptions) 
         raise ValueError(
             f"option(s) defined in lib/options.glsl but tested by no program: "
             f"{', '.join(dead)}. The menu entry would do nothing."
+        )
+    # Iris registers a boolean option only when it sees a plain #ifdef/#ifndef
+    # of it; `#if defined(X)` alone leaves the menu entry unresolved in game
+    # ("Unable to resolve shader pack option menu element").
+    hidden = sorted(set(options.booleans) - plain_tests)
+    if hidden:
+        raise ValueError(
+            f"boolean option(s) never tested with a plain #ifdef/#ifndef: "
+            f"{', '.join(hidden)}. Iris will not list them in the options menu."
         )
 
 

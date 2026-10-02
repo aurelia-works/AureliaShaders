@@ -8,7 +8,8 @@
 //
 // The surface normal is two crossed analytic gradients rather than a texture.
 // That keeps the whole treatment to arithmetic, adds no sampler, and costs
-// nothing per fragment beyond two cosines.
+// nothing per fragment beyond two cosines for the surface and two for the glint
+// ripples.
 //
 // The wave field is animated by two travelling analytic waves driven by
 // frameTimeCounter, an Iris uniform documented in its own reference. The
@@ -53,15 +54,38 @@ vec2 aureliaWaterSlope(vec2 horizontalPosition) {
     return slope;
 }
 
-// World-space surface normal of the water at a player-space position.
-// `worldNormal` is the geometric normal from the vertex stage, so a still-water
-// surface passes through unchanged and the wave term only adds perturbation.
+// Short fast ripples used ONLY to break the sun glint into a scattered path.
+// The large waves above tilt the surface by a few degrees, far less than the
+// glint lobe is wide, so on their own the highlight is one smooth blob. This
+// adds a small second slope field at ~2 block wavelength, applied to the
+// specular direction rather than the surface normal, so the body colour and the
+// Fresnel term stay calm. Fades out with distance: beyond ~100 blocks it would
+// alias into shimmer rather than read as sparkle.
+const float AURELIA_RIPPLE_STRENGTH = 0.06;
+const vec2 AURELIA_RIPPLE_C = vec2(0.643, -0.766);
+const vec2 AURELIA_RIPPLE_D = vec2(-0.906, -0.423);
+vec2 aureliaWaterRippleSlope(vec2 horizontalPosition) {
+#ifdef AURELIA_WATER_ANIMATED
+    float t = frameTimeCounter;
+#else
+    float t = 0.0;
+#endif
+    return AURELIA_RIPPLE_C * cos(dot(AURELIA_RIPPLE_C, horizontalPosition) * 2.3 - 1.9 * t)
+         + AURELIA_RIPPLE_D * cos(dot(AURELIA_RIPPLE_D, horizontalPosition) * 3.1 - 1.4 * t);
+}
+
+// World-space surface normal of the water at a player-space position, oriented
+// UP (+y) for every horizontal face whichever way the vertex stage's normal
+// points, so the caller can flip it toward the viewer once and tell a surface
+// seen from above from one seen from below. The wave slope tilts the geometric
+// normal in proportion to its vertical component, so horizontal water gets the
+// full ripple, and a waterfall or flowing side face (normal.y ~ 0) keeps its
+// own orientation instead of being dragged toward a sky-facing wave normal.
+// `worldNormal` arrives constant per quad, so no pre-normalisation is needed:
+// one normalize in total.
 vec3 aureliaWaterNormal(vec2 horizontalPosition, vec3 worldNormal, float amplitude) {
-    vec2 slope = aureliaWaterSlope(horizontalPosition) * amplitude;
-    vec3 waveNormal = normalize(vec3(-slope.x, 1.0, -slope.y));
-    // Blend toward the geometric normal so steep terrain-adjacent water and any
-    // non-horizontal surface keep their own orientation.
-    return normalize(mix(normalize(worldNormal), waveNormal, 0.75));
+    vec2 slope = aureliaWaterSlope(horizontalPosition) * (0.75 * amplitude * abs(worldNormal.y));
+    return normalize(vec3(worldNormal.x - slope.x, abs(worldNormal.y), worldNormal.z - slope.y));
 }
 
 // Schlick reflectance for water's index of refraction. F0 is small, so a
@@ -69,7 +93,8 @@ vec3 aureliaWaterNormal(vec2 horizontalPosition, vec3 worldNormal, float amplitu
 // angles pick up sky, which is what makes a shoreline read as a shoreline.
 float aureliaWaterFresnel(float cosine) {
     float grazing = 1.0 - clamp(cosine, 0.0, 1.0);
-    return 0.02 + 0.98 * pow(grazing, 5.0);
+    float g2 = grazing * grazing;
+    return 0.02 + 0.98 * (g2 * g2 * grazing);
 }
 
 // Reflection colour. There is no sky render target to sample, so the reflected
@@ -83,10 +108,18 @@ vec3 aureliaWaterReflection(vec3 reflectedDirection) {
     return aureliaSkyDome(
         aureliaSkyColorLinear(),
         aureliaFogColorLinear(),
-        normalize(reflectedDirection),
+        reflectedDirection,
         aureliaSunDirection(),
         rainStrength);
 }
+
+// Mid-depth body absorption (red absorbed first): the accepted P3.3A palette.
+// Always defined: the plain body, the depth curve's middle and the underside
+// window all share it.
+const vec3 AURELIA_WATER_BODY_MID = vec3(0.58, 0.78, 0.90);
+// Linear teal the biome-tinted albedo is pulled toward (half way) so the body
+// reads blue-teal rather than the atlas's saturated pure blue.
+const vec3 AURELIA_WATER_ALBEDO = vec3(0.015, 0.260, 0.310);
 
 // Depth-based body absorption, gated by AURELIA_WATER_DEPTH.
 //
@@ -109,7 +142,6 @@ vec3 aureliaWaterReflection(vec3 reflectedDirection) {
 // stays clearly lighter than MID for shallow readability but close enough that
 // a single block step cannot imprint an edge. MID/DEEP are the accepted palette.
 const vec3 AURELIA_WATER_BODY_SHALLOW = vec3(0.84, 0.91, 0.96);  // clear, not white
-const vec3 AURELIA_WATER_BODY_MID = vec3(0.58, 0.78, 0.90);      // accepted P3.3A palette
 const vec3 AURELIA_WATER_BODY_DEEP = vec3(0.46, 0.70, 0.80);     // subtly deeper limit
 const float AURELIA_WATER_SHALLOW_TO_MID = 1.0;   // blocks
 const float AURELIA_WATER_MID_TO_DEEP = 6.0;      // blocks

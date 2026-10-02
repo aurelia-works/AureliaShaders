@@ -1,10 +1,8 @@
 #version 330 compatibility
 
-// Phase 2B introduction. This stage mirrors gbuffers_terrain.vsh exactly.
-// Iris previously fell back from gbuffers_water to gbuffers_terrain, so an
-// explicit pair with identical math keeps rendered water behaviour unchanged
-// while bringing the path under Aurelia's ownership. Water-specific shading is a
-// later change; this file deliberately adds none.
+// Mirrors gbuffers_terrain.vsh: the water shading is all in the fragment stage,
+// so Iris's former gbuffers_terrain fallback and this pair share their vertex
+// math. worldNormal stays unnormalised across the quad (constant per face).
 
 #include "/lib/options.glsl"
 #define AURELIA_FRAME_VERTEX

@@ -23,21 +23,32 @@ vec3 aureliaLinearToSrgb(vec3 linear) {
     return clamp(mix(low, high, step(vec3(0.0031308), nonNegative)), 0.0, 1.0);
 }
 
+// Vertex colours are decoded ONCE PER VERTEX (aureliaDecodeVertexColor, called
+// from each vertex stage) instead of once per fragment: a vec3 pow per pixel is
+// one of the largest ALU items in the terrain pass. Interpolating the linear
+// value differs from decoding the interpolated sRGB value only where the four
+// corners of a face disagree (biome-blend edges), and there by far less than
+// one 8-bit step. Alpha is never decoded.
+vec4 aureliaDecodeVertexColor(vec4 vertexColor) {
+    return vec4(aureliaSrgbToLinear(vertexColor.rgb), vertexColor.a);
+}
+
 // Texture and vertex colors are independent sRGB color inputs. Their alpha
 // channels are coverage/modulation scalars and remain in their original space.
-vec4 aureliaDecodeSrgbModulation(vec4 textureColor, vec4 vertexColor) {
+// `vertexLinear` is the already-decoded vertex colour (see above).
+vec4 aureliaDecodeSrgbModulation(vec4 textureColor, vec4 vertexLinear) {
     return vec4(
-        aureliaSrgbToLinear(textureColor.rgb) * aureliaSrgbToLinear(vertexColor.rgb),
-        textureColor.a * vertexColor.a
+        aureliaSrgbToLinear(textureColor.rgb) * vertexLinear.rgb,
+        textureColor.a * vertexLinear.a
     );
 }
 
 // With separateAo=true, Iris moves terrain AO out of gl_Color.rgb and into
 // gl_Color.a. Decode only the biome tint as a color, then apply AO as the
 // linear scalar it is. Terrain alpha remains texture coverage.
-vec4 aureliaDecodeSrgbTerrain(vec4 textureColor, vec4 vertexColor) {
+vec4 aureliaDecodeSrgbTerrain(vec4 textureColor, vec4 vertexLinear) {
     return vec4(
-        aureliaSrgbToLinear(textureColor.rgb) * aureliaSrgbToLinear(vertexColor.rgb) * vertexColor.a,
+        aureliaSrgbToLinear(textureColor.rgb) * vertexLinear.rgb * vertexLinear.a,
         textureColor.a
     );
 }

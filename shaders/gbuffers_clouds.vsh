@@ -6,8 +6,9 @@
 // exist on vanilla clouds and lighting here is analytical, so none are emitted.
 
 #include "/lib/options.glsl"
-
-uniform mat4 gbufferModelViewInverse;
+#define AURELIA_FRAME_VERTEX
+#include "/lib/color.glsl"
+#include "/lib/look.glsl"
 
 out vec2 texcoord;
 out vec4 vertexColor;
@@ -16,7 +17,8 @@ out vec3 playerPosition;
 void main() {
     gl_Position = ftransform();
     texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;
-    vertexColor = gl_Color;
+    vertexColor = aureliaDecodeVertexColor(gl_Color);
+    aureliaWriteFrameConstants();
     vec3 viewPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
     playerPosition = (gbufferModelViewInverse * vec4(viewPosition, 1.0)).xyz;
 }

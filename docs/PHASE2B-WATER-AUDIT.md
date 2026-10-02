@@ -51,9 +51,11 @@ undefined results. Scene-colour refraction would require either a second colour
 buffer or a composite pass. `docs/PHASE2A.md` excludes both from Phase 2B, so
 refraction-by-scene-sample is out of scope and should not be designed around.
 
-`depthtex0` is a separate texture and stays readable, so depth-based effects —
-water thickness, depth-difference opacity, shoreline softening — remain
-available at the cost of one depth read.
+`depthtex1` is the pre-translucent opaque copy and stays readable during the
+water pass, so depth-based effects — water thickness, depth-difference
+opacity, shoreline softening — remain available at the cost of one depth read.
+(`depthtex0` is live during translucents and may hold the water surface
+itself; verified against the installed Iris 1.7.6 pipeline.)
 
 ## Coordinate space contract
 
@@ -68,7 +70,7 @@ The final column is the failure mode if the space is misread.
 | Normals | world orientation, recovered from view space | `mat3(gbufferModelViewInverse) * (gl_NormalMatrix * gl_Normal)` | Reading a view-space component (`.y`) yields a camera-pitch dependency — the exact defect fixed in `ab88a7d` |
 | Reflection direction | world/player space, both terms | must be built, not yet present | Mixing a world normal with `normalize(viewPosition)` rotates the reflection with camera yaw and pitch |
 | Sky lookup | `skyColor` uniform, sRGB-encoded | `gbuffers_skybasic.fsh` decodes via `aureliaSrgbToLinear` | Treating `skyColor` as linear over-brightens the reflection; there is no sky render target to sample |
-| Depth / fog | fog uses `length(viewPosition)`; depth via `depthtex0` | `aureliaApplyFog` in `lib/lighting.glsl` | A second, water-specific fog model would diverge from terrain at the shoreline |
+| Depth / fog | fog uses `length(viewPosition)`; floor depth via `depthtex1` (pre-translucent opaque copy; `depthtex0` is live during translucents) | `aureliaApplyFog` in `lib/lighting.glsl` | A second, water-specific fog model would diverge from terrain at the shoreline |
 
 Iris confirms `sunPosition`, `moonPosition`, and `shadowLightPosition` are all
 **view space** with length 100, and `gl_NormalMatrix` produces a **view space**
@@ -122,7 +124,7 @@ Excluded by `docs/PHASE2A.md` and by the M1 budget: SSR, ray tracing, PBR
 material maps, multi-pass or cubemap reflections, and any additional colour
 render target. An analytic treatment — procedural normal perturbation, Fresnel
 from the world-space view/normal relationship, `skyColor` as the reflection
-source, and `depthtex0` for thickness — stays inside the current architecture
+source, and `depthtex1` (pre-translucent opaque copy) for thickness — stays inside the current architecture
 and the existing one-fullscreen-pass budget.
 
 ## Recommended implementation sequence

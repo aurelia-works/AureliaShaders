@@ -12,6 +12,9 @@ const int shadowMapResolution = AURELIA_SHADOW_RESOLUTION;
 // expand directly to a numeric literal rather than a float(...) expression.
 const float shadowDistance = AURELIA_SHADOW_DISTANCE;
 const float shadowDistanceRenderMul = 1.0;
+// Hardware depth compare + bilinear filter on shadowtex0 (lib/shadows.glsl
+// declares it too, beside the sampler2DShadow that depends on it).
+const bool shadowHardwareFiltering0 = true;
 
 in vec2 texcoord;
 in vec4 vertexColor;

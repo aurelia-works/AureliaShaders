@@ -21,7 +21,9 @@ from pathlib import Path
 
 INCLUDE = re.compile(r'^\s*#include\s+"([^"]+)"\s*$')
 OPTION = re.compile(r"^#define\s+(AURELIA_[A-Z_]+)(?:\s+([^/\s]+))?\s*//\s*\[([^]]*)\]")
-BOOLEAN_OPTION = re.compile(r"^#define\s+(AURELIA_[A-Z_]+)\s*//")
+# Boolean options may be declared on (`#define X`) or off by default
+# (`//#define X`) - Iris recognises both as togglable booleans on its menu.
+BOOLEAN_OPTION = re.compile(r"^(?://)?#define\s+(AURELIA_[A-Z_]+)\s*//")
 PROFILE = re.compile(r"^profile\.([A-Z]+)\s*=\s*(.*)$")
 # Interpolated stage variables: `out` in a vertex stage, `in` in a fragment stage.
 _VARYING_RE = re.compile(r"^\s*(?:out|in)\s+(?:lowp\s+|mediump\s+|highp\s+)?\w+\s+(\w+)\s*;",

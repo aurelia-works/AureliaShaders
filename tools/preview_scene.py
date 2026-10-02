@@ -182,7 +182,11 @@ def build_atlas(seed: int = 7) -> np.ndarray:
     def shaded(base: np.ndarray, noise: np.ndarray, amount: float) -> np.ndarray:
         return np.asarray(base, np.float32) * (1.0 - amount / 2 + amount * noise)[..., None]
 
-    tiles[GRASS_TOP] = shaded([0.52, 0.74, 0.34], medium, 0.36)
+    # Vegetation bases are near-grayscale, like Minecraft's own grass_top and
+    # leaves textures: the biome tint arrives per-vertex (_tint) and does the
+    # colouring at shade time. A green base under a green tint multiplied
+    # twice and read as neon through the grade.
+    tiles[GRASS_TOP] = shaded([0.88, 0.88, 0.88], medium, 0.36)
     dirt = shaded([0.56, 0.42, 0.30], fine, 0.30)
     side = dirt.copy()
     side[:7] = tiles[GRASS_TOP][:7]
@@ -195,7 +199,7 @@ def build_atlas(seed: int = 7) -> np.ndarray:
     tiles[COBBLE] = cobble
     tiles[SAND] = shaded([0.90, 0.85, 0.66], fine, 0.16)
 
-    leaves = shaded([0.42, 0.64, 0.30], fine, 0.52)
+    leaves = shaded([0.82, 0.82, 0.82], fine, 0.52)
     tiles[LEAVES] = np.dstack([leaves, (fine > 0.60).astype(np.float32)[:, :, None]])
 
     logs = shaded([0.44, 0.33, 0.20], _value_noise(rng, n, 3), 0.38)

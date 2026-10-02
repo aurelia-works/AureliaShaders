@@ -2,6 +2,7 @@
 
 #include "/lib/options.glsl"
 #include "/lib/color.glsl"
+#include "/lib/look.glsl"
 #include "/lib/tonemap.glsl"
 #include "/lib/debug.glsl"
 
@@ -10,8 +11,21 @@ uniform float aureliaSmoothedFrameTime;
 uniform float aureliaAdaptiveQuality;
 uniform float aureliaAdaptiveShadowFilterSamples;
 
+#ifdef AURELIA_DISTANT_RAIN
+uniform sampler2D depthtex0;
+uniform float frameTimeCounter;
+uniform mat4 gbufferProjectionInverse;
+#endif
+
+#ifdef AURELIA_DISTANT_RAIN
+#include "/lib/distant_rain.glsl"
+#endif
+
 #ifdef AURELIA_SHADOWS
-uniform sampler2D shadowtex0;
+// shadowtex0 is hardware-compared (lib/shadows.glsl), so the raw-depth debug
+// view reads shadowtex1, which holds the same casters (shadowTranslucent is
+// off) without compare mode.
+uniform sampler2D shadowtex1;
 #endif
 
 in vec2 texcoord;
@@ -33,7 +47,13 @@ void main() {
     vec3 color = scene.rgb;
 
 #if AURELIA_DEBUG_VIEW == 0
-    color = aureliaGrade(scene.rgb);
+    color = scene.rgb;
+    #ifdef AURELIA_DISTANT_RAIN
+        // The curtain composites into the LINEAR scene before grading, so
+        // distant rain goes through the same tonemap/sRGB as everything else.
+        color += aureliaDistantRain(texcoord);
+    #endif
+    color = aureliaGrade(color);
 #elif AURELIA_DEBUG_VIEW == 2
     color = aureliaDebugAdaptive(aureliaSmoothedFrameTime, aureliaAdaptiveQuality);
 #elif AURELIA_DEBUG_VIEW == 3
@@ -44,7 +64,7 @@ void main() {
     color = vec3(clamp(dot(scene.rgb, vec3(1.0 / 3.0)), 0.0, 1.0));
 #elif AURELIA_DEBUG_VIEW == 4
     #ifdef AURELIA_SHADOWS
-        color = vec3(texture(shadowtex0, texcoord).r);
+        color = vec3(texture(shadowtex1, texcoord).r);
     #else
         color = vec3(0.0);
     #endif

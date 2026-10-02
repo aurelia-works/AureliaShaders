@@ -1,6 +1,7 @@
 #version 330 compatibility
 
 #include "/lib/options.glsl"
+#define AURELIA_FRAME_FRAGMENT
 #include "/lib/color.glsl"
 #include "/lib/look.glsl"
 #include "/lib/sky.glsl"
@@ -12,8 +13,11 @@
 // sunPosition is view space; aureliaSunDirection() in lib/look.glsl rotates it
 // to world space, so no view-space component is read directly here.
 
+uniform mat4 gbufferProjectionInverse;
+uniform float viewWidth;
+uniform float viewHeight;
+
 in vec4 vertexColor;
-in vec3 viewDirection;
 
 /* RENDERTARGETS: 0 */
 layout(location = 0) out vec4 aureliaSceneColor;
@@ -27,14 +31,35 @@ void main() {
     // encoding, but as single values with no directionality. Without a gradient
     // the whole upper frame is one flat colour, which is the most obvious
     // giveaway of a pack that never treats its sky.
-    vec3 skyColorLinear = aureliaSrgbToLinear(skyColor);
-    vec3 fogColorLinear = aureliaSrgbToLinear(fogColor);
-    vec3 direction = normalize(viewDirection);
+    vec3 skyColorLinear = aureliaSkyColorLinear();
+    vec3 fogColorLinear = aureliaFogColorLinear();
+    // The view ray is rebuilt from the pixel, not from the sky geometry, and
+    // at a FIXED far-plane depth. Minecraft rotates the sky DOME by the
+    // celestial angle while the void plane below it is drawn unrotated, so a
+    // direction read off the geometry disagrees between the two draw calls (a
+    // hard seam across the horizon) and disagrees with sunPosition (the disc
+    // lands away from the real sun). The depth passed to the unprojection is
+    // pinned to NDC 1.0 (the far plane): gl_FragCoord.z is the depth of
+    // whichever sky piece covered the pixel, and the dome and the void plane
+    // sit at different camera distances, so letting the geometry's depth into
+    // the unprojection tilted the ray differently per draw call. The
+    // convention was verified against this pack's own projection: the inverse
+    // of the standard GL perspective maps vec4(ndc.xy, 1.0, 1.0) to the
+    // far-plane point on that pixel's ray (view space looks down -z), so
+    // normalising after the w-divide yields the same camera ray for every
+    // pixel of every sky draw.
+    vec2 skyNdc = (gl_FragCoord.xy / vec2(viewWidth, viewHeight)) * 2.0 - 1.0;
+    vec4 skyRayView = gbufferProjectionInverse * vec4(skyNdc, 1.0, 1.0);
+    skyRayView /= skyRayView.w;
+    vec3 direction = normalize((gbufferModelViewInverse * vec4(skyRayView.xyz, 0.0)).xyz);
 
 #ifdef AURELIA_ATMOSPHERE
     // Directional atmosphere: see lib/sky.glsl. ALU only, no texture or target.
+    // The sun and moon discs are analytic (lib/sky.glsl), so Minecraft's square
+    // sun/moon textures are suppressed here rather than stacked on top.
     vec3 sky = aureliaAtmosphereSky(
-        skyColorLinear, fogColorLinear, direction, aureliaSunDirection(), rainStrength);
+        skyColorLinear, fogColorLinear, direction,
+        aureliaSunDirection(), aureliaMoonDirection(), rainStrength);
 #else
     // Revertible fallback: the flat analytical ramp used before P3.1.
     float elevation = clamp(direction.y, -1.0, 1.0);
@@ -69,10 +94,38 @@ void main() {
     // Rain flattens the ramp toward the fog colour, which is what an overcast
     // sky does, instead of leaving a clear gradient over a dimmed sun.
     sky = mix(sky, fogColorLinear, AURELIA_RAIN_SKY_FLATTEN * rainStrength);
+
+    // The shared celestial bodies, so Potato keeps the same round sun, moon
+    // and stars as the analytic presets instead of Minecraft's square
+    // textures. ALU only: ~30 operations per sky pixel, no samplers, no
+    // passes - negligible even on this preset's budget.
+    float day = aureliaSunVisibility();
+    float sunAlign = max(dot(direction, lightDirection), 0.0);
+    sky = aureliaApplySunDisc(sky, sunAlign, day, rainStrength);
+    sky = aureliaApplyMoon(sky, direction, aureliaMoonDirection(), day, rainStrength);
+    sky = aureliaApplyStars(sky, direction, lightDirection.y, rainStrength);
+#endif
+
+#ifdef AURELIA_WATER_UNDERWATER
+    // Submerged: the sky is seen through the water column, so background
+    // pixels are the underwater atmosphere for this ray, not the air dome.
+    // Replacing it here (rather than tinting the final image) keeps the
+    // background, the translucent water surface's bleed-through and the
+    // terrain fog all on the same palette. Gated on the runtime camera state,
+    // so an above-water frame evaluates the accepted sky untouched.
+    if (isEyeInWater == 1) {
+        sky = aureliaUnderwaterColor(direction, rainStrength);
+    }
 #endif
 
     float luma = dot(sky, vec3(0.2126, 0.7152, 0.0722));
     sky = mix(vec3(luma), sky, 1.00);
-    aureliaSceneColor = vec4(sky * aureliaSrgbToLinear(vertexColor.rgb), 1.0);
+    // BOTH paths own their RGB: the ramp is built from Iris's sky/fog colours,
+    // which already carry time, biome and weather. Multiplying by the sky
+    // mesh's vertex colour re-applied Minecraft's per-draw tinting a second
+    // time - the same geometry-only state that split the analytic sky - and on
+    // this fallback it multiplied the ramp by the near-black night vertex
+    // colour, crushing Potato nights to black. Alpha stays 1.0: opaque sky.
+    aureliaSceneColor = vec4(sky, 1.0);
 #endif
 }

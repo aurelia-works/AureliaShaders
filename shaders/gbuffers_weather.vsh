@@ -6,6 +6,9 @@
 // the gbuffers_textured_lit fallback was getting wrong.
 
 #include "/lib/options.glsl"
+#define AURELIA_FRAME_VERTEX
+#include "/lib/color.glsl"
+#include "/lib/look.glsl"
 
 out vec2 texcoord;
 out vec2 lmcoord;
@@ -17,6 +20,7 @@ void main() {
     texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;
     lmcoord = (gl_TextureMatrix[1] * gl_MultiTexCoord1).xy;
     lmcoord = clamp(lmcoord / (30.0 / 32.0) - (1.0 / 32.0), 0.0, 1.0);
-    vertexColor = gl_Color;
+    vertexColor = aureliaDecodeVertexColor(gl_Color);
+    aureliaWriteFrameConstants();
     viewPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
 }

@@ -54,7 +54,10 @@ them. `tools/preview_targets.py` parses `/* RENDERTARGETS: ... */`,
 `size.buffer.colortexN`, and `preview_render.py` allocates the declared target
 set and runs every composite-style program (`deferred`, `composite*`, `final`)
 in Iris order, binding each pass's declared targets and its `colortexN` /
-`depthtex0` / `shadowtex0` samplers. `python3 tools/preview_targets.py` runs a
+`depthtex0` / `depthtex1` / `shadowtex0` samplers. The water program's
+pre-translucent snapshot is bound as `depthtex1`, matching Iris 1.7.6
+(`depthtex0` stays the live scene depth for composite/final timing).
+`python3 tools/preview_targets.py` runs a
 self-check and dumps the current target set.
 
 At present the pack declares a single `RGBA16F` `colortex0` and one composite
@@ -122,5 +125,6 @@ error, and each is a class that can recur in shader work:
 Guards now in place: the attribute layout has a single source of truth shared by
 the generated vertex prelude and the buffer builder; buffer arrays are shape
 checked; `index_count` is distinct from `count`; texture uploads assert their
-channel count; and the CLI puts the debug view in the output filename so two
-debug renders cannot silently overwrite each other.
+channel count; and the CLI includes the debug view and nonzero rain strength in
+output filenames so distinct deterministic renders cannot silently overwrite
+each other.

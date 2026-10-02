@@ -1,67 +1,60 @@
-// Compact forward shadow receiver. It intentionally uses a single manual-depth
-// texture and fixed PCF patterns: no screen-space reconstruction, noise, or
-// temporal history means low bandwidth and stable camera/moving-sun behaviour.
+// Compact forward shadow receiver. It intentionally uses a single hardware-
+// compared depth texture and fixed PCF patterns: no screen-space
+// reconstruction, noise, or temporal history means low bandwidth and stable
+// camera/moving-sun behaviour.
 //
 // This file is included by lib/lighting.glsl immediately after lib/look.glsl, so
 // the contract constants below are in scope. It deliberately does not include
 // look.glsl itself: that would double-declare its uniforms and helpers.
 
 #ifdef AURELIA_SHADOWS
-uniform sampler2D shadowtex0;
+uniform sampler2DShadow shadowtex0;
 uniform mat4 shadowModelView;
 uniform mat4 shadowProjection;
 uniform float aureliaAdaptiveQuality;
 
-// Manual comparisons need unfiltered depth. The small PCF kernels below supply
-// the softness while keeping the sample count explicit and predictable.
-const bool shadowtex0Nearest = true;
+// Hardware depth comparison with bilinear filtering: every texture() call below
+// compares the receiver depth against the 2x2 texel footprint and returns the
+// filtered visibility, i.e. a 4-sample PCF for the price of one fetch. This
+// replaces the manual step(texture(..)) taps on an unfiltered map, which paid
+// one fetch per sample and still stair-stepped at the 512 map Low uses. Iris
+// reads this directive from the source and switches shadowtex0's compare mode
+// on; shadowtex1 stays a plain depth texture (debug view 4 reads that one).
+const bool shadowHardwareFiltering0 = true;
 
 float aureliaShadowTap(vec3 screenPosition, vec2 texel, vec2 offset) {
-    return step(screenPosition.z, texture(shadowtex0, screenPosition.xy + offset * texel).r);
+    return texture(shadowtex0, vec3(screenPosition.xy + offset * texel, screenPosition.z));
 }
 
 float aureliaShadowOneTap(vec3 screenPosition, vec2 texel) {
     return aureliaShadowTap(screenPosition, texel, vec2(0.0));
 }
 
+// Four filtered taps at +/-0.75 texel: a ~3.5-texel tent, the same footprint
+// the old manual nine-tap kernel covered, at four fetches instead of nine.
 float aureliaShadowFourTap(vec3 screenPosition, vec2 texel) {
-    vec2 radius = vec2(1.10);
+    const float r = 0.75;
     return 0.25 * (
-        aureliaShadowTap(screenPosition, texel, vec2(-radius.x, -radius.y)) +
-        aureliaShadowTap(screenPosition, texel, vec2( radius.x, -radius.y)) +
-        aureliaShadowTap(screenPosition, texel, vec2(-radius.x,  radius.y)) +
-        aureliaShadowTap(screenPosition, texel, vec2( radius.x,  radius.y))
+        aureliaShadowTap(screenPosition, texel, vec2(-r, -r)) +
+        aureliaShadowTap(screenPosition, texel, vec2( r, -r)) +
+        aureliaShadowTap(screenPosition, texel, vec2(-r,  r)) +
+        aureliaShadowTap(screenPosition, texel, vec2( r,  r))
     );
 }
 
-float aureliaShadowNineTap(vec3 screenPosition, vec2 texel) {
-    vec2 radius = vec2(1.35);
-    float total = 0.0;
-    total += aureliaShadowTap(screenPosition, texel, vec2(-radius.x, -radius.y));
-    total += aureliaShadowTap(screenPosition, texel, vec2( 0.0,      -radius.y));
-    total += aureliaShadowTap(screenPosition, texel, vec2( radius.x, -radius.y));
-    total += aureliaShadowTap(screenPosition, texel, vec2(-radius.x,  0.0));
-    total += aureliaShadowTap(screenPosition, texel, vec2( 0.0));
-    total += aureliaShadowTap(screenPosition, texel, vec2( radius.x,  0.0));
-    total += aureliaShadowTap(screenPosition, texel, vec2(-radius.x,  radius.y));
-    total += aureliaShadowTap(screenPosition, texel, vec2( 0.0,       radius.y));
-    total += aureliaShadowTap(screenPosition, texel, vec2( radius.x,  radius.y));
-    return total / 9.0;
-}
-
+// Tier budget (fetches): FILTER_MAX 1 -> 1, 2 -> 1, 3 -> 4. Tiers 1 and 2 both
+// take the single filtered tap; tier 2 used to pay four manual fetches for a
+// softness one hardware-filtered fetch now matches closely enough.
 float aureliaShadowFiltered(vec3 screenPosition, vec2 texel) {
-#if AURELIA_SHADOW_FILTER_MAX == 1
+#if AURELIA_SHADOW_FILTER_MAX <= 2
     return aureliaShadowOneTap(screenPosition, texel);
-#elif AURELIA_SHADOW_FILTER_MAX == 2
-    return aureliaShadowFourTap(screenPosition, texel);
 #else
     #ifdef AURELIA_SHADOW_ADAPTIVE
         // Uses the Phase 1 8-tick-down / 80-tick-up smoothed quality signal.
-        // 38-50 FPS remains four taps; only sustained headroom reaches nine.
-        if (aureliaAdaptiveQuality < 0.30) return aureliaShadowOneTap(screenPosition, texel);
-        if (aureliaAdaptiveQuality < 0.82) return aureliaShadowFourTap(screenPosition, texel);
+        // Below sustained headroom the single filtered tap is used.
+        if (aureliaAdaptiveQuality < 0.82) return aureliaShadowOneTap(screenPosition, texel);
     #endif
-    return aureliaShadowNineTap(screenPosition, texel);
+    return aureliaShadowFourTap(screenPosition, texel);
 #endif
 }
 

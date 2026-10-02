@@ -10,6 +10,7 @@
 // See docs/LOOK-CONTRACT.md and docs/PHASE2A.md.
 #include "/lib/color.glsl"
 #include "/lib/look.glsl"
+#include "/lib/sky.glsl"
 
 uniform vec3 shadowLightPosition;
 
@@ -41,23 +42,50 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     // the contract's neutral-with-cool-bias tint, and any sky-tinted shading
     // is deliberately not carried by the ambient term at all.
     vec3 ambientTint = aureliaAmbientTint(skyLight);
+    // Rain cools the fill toward the sky tint and lifts it slightly: an
+    // overcast dome dominates the ambient, and its colour is the sky's, not
+    // the neutral ground bounce. Contrast falls via the direct term below.
+    ambientTint = mix(ambientTint, AURELIA_AMBIENT_SKY, 0.35 * rainStrength);
     // Two fills: the existing sky-driven term, plus a small constant floor.
     // The floor is what stops shadowed and overhang faces crushing to black:
     // the steep ACES curve plus AURELIA_CONTRAST deepens anything already
     // below mid-grey, so a purely proportional fill cannot protect them.
+    // The daylight part of the sky fill fades to a restrained residual at
+    // night - moonlight below replaces it as the directional source - because
+    // leaving it up made night terrain read as a dim overcast afternoon.
+    float dayFill = mix(0.40, 1.0, sunUp);
     vec3 coolAmbient = ambientTint
-        * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight)
-        + vec3(0.030, 0.032, 0.036);    float shadow = aureliaShadowVisibility(playerPosition, worldNormal, shadowDir, sunUp, rainStrength);
+        * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight * dayFill
+           * (1.0 + 0.08 * rainStrength))
+        + vec3(0.055, 0.057, 0.063);
+    float shadow = aureliaShadowVisibility(playerPosition, worldNormal, shadowDir, sunUp, rainStrength);
     vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * shadow);
     vec3 torch = vec3(1.00, 0.66, 0.38) * (blockLight * blockLight * 1.10);
-    // Rain suppresses direct sun contrast, but should not turn ambient fill or
-    // torch light teal/dim by multiplying the entire accumulated result.
+    // Rain suppresses direct sun contrast and saturation of the accumulated
+    // light: overcast light is desaturated and soft. The desaturation is at
+    // the material stage (the illumination, not the final image), and only in
+    // rain, so dry weather stays bit-identical.
     direct *= 1.0 - AURELIA_RAIN_SUN_DIM * rainStrength;
+
+    // Moonlight: the night's directional source. Without it night terrain is a
+    // pure silhouette - only a proportional sky fill, which the grade then
+    // crushes. Cool and dim, gated by the moon's own visibility so it cannot
+    // leak into daylight, and softened by weather.
+    float moonUp = smoothstep(-0.05, 0.05, aureliaMoonDirection().y);
+    float moonNdl = max(dot(normal, aureliaMoonDirection()), 0.0);
+    vec3 moonlight = vec3(0.20, 0.23, 0.30)
+        * ((1.0 - sunUp) * moonUp * skyLight * moonNdl * (1.0 - 0.5 * rainStrength));
 
     // Optional per-pixel terms, both ALU only: no sampler, uniform, render
     // target, or pass. With both options undefined the additions below vanish
     // at compile time and this is the original expression.
-    vec3 lit = coolAmbient + direct + torch;
+    vec3 lit = coolAmbient + direct + torch + moonlight;
+
+    // Rain desaturates the accumulated illumination toward its own luma: the
+    // scene loses chroma without going grey (the ambient keeps its cool bias
+    // and torches stay warm because only the sum is softened, and by 25%).
+    float rainLuma = dot(lit, vec3(0.2126, 0.7152, 0.0722));
+    lit = mix(vec3(rainLuma), lit, 1.0 - 0.25 * rainStrength);
 
 #if defined(AURELIA_FOLIAGE_TRANSLUCENCY) || defined(AURELIA_WETNESS_SPECULAR)
     // playerPosition is camera-relative player space, so the camera sits at its
@@ -71,12 +99,14 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     // Wrapped transmission for thin geometry. backLit is high only where the
     // visible face is turned away from the sun, sunBehind only where the camera
     // looks sunward, so back-lit leaves and grass pick up sunlight instead of
-    // going black while front-lit terrain gains nothing. Deliberately not
-    // multiplied by `shadow`, so the term stays separable from
-    // AURELIA_SHADOW_STRENGTH, and tinted by albedo through the product below.
+    // going black while front-lit terrain gains nothing. The term is gated by
+    // the shadow lookup: transmission is sunlight reaching the leaf, so a leaf
+    // the shadow map says is blocked must not glow from the wrong side. The
+    // previous version deliberately skipped that gate and read as a self-lit
+    // glow in every shaded canopy. Tinted by albedo through the product below.
     float backLit = max(-dot(normal, lightDir), 0.0);
     float sunBehind = max(dot(viewDir, lightDir), 0.0);
-    lit += aureliaSunColor(lightDir.y) * (sunUp * skyLight * 0.55
+    lit += aureliaSunColor(lightDir.y) * (sunUp * skyLight * 0.28 * shadow
         * (1.0 - AURELIA_RAIN_SUN_DIM * rainStrength) * backLit * sunBehind * sunBehind);
 #endif
 
@@ -104,8 +134,8 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     return color;
 }
 
-// Fog application lives in lib/look.glsl next to the curve itself, so every
-// pass (terrain, entities, water, weather, clouds) composites identically.
+// The curve lives in lib/look.glsl; the direction-aware fog application lives
+// beside the shared sky palette in lib/sky.glsl. Every pass uses this contract.
 vec3 aureliaApplyFog(vec3 color, vec3 viewPosition) {
     return aureliaApplyFogContract(color, viewPosition, AURELIA_FOG_DENSITY, rainStrength);
 }

@@ -1,14 +1,21 @@
 vec3 aureliaAcesFitted(vec3 color) {
     // Fitted filmic curve: restrained highlight rolloff without a bloom pass.
+    //
+    // GLSL's mat3 constructor fills COLUMNS. The canonical ACES fit is written
+    // row-major, so listing those values directly built the TRANSPOSED matrix:
+    // the curve hue-shifted clipped warm colours into salmon-pink (out.r clips
+    // to 1.0 while out.b stays high), which is the pink sun this pack used to
+    // render. The matrices below are the canonical ones, transposed for GLSL's
+    // column-major constructor, so a neutral input stays neutral.
     const mat3 inputMat = mat3(
-        0.59719, 0.35458, 0.04823,
-        0.07600, 0.90834, 0.01566,
-        0.02840, 0.13383, 0.83777
+        0.59719, 0.07600, 0.02840,
+        0.35458, 0.90834, 0.13383,
+        0.04823, 0.01566, 0.83777
     );
     const mat3 outputMat = mat3(
-        1.60475, -0.53108, -0.07367,
-       -0.10208,  1.10813, -0.00605,
-       -0.00327, -0.07276,  1.07602
+         1.60475, -0.10208, -0.00327,
+        -0.53108,  1.10813, -0.07276,
+        -0.07367, -0.00605,  1.07602
     );
     color = inputMat * color;
     vec3 a = color * (color + 0.0245786) - 0.000090537;

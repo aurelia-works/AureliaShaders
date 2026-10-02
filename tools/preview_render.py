@@ -307,12 +307,33 @@ class Program:
         else:
             raise TypeError(f"unsupported uniform type for {name}: {type(value)}")
 
-    def sampler(self, name: str, unit: int, texture: int) -> None:
+    def sampler(self, name: str, unit: int, texture: int, compare_sampler: int = 0) -> None:
+        """Bind ``texture`` to ``unit``.
+
+        A uniform declared ``sampler2DShadow`` is how the pack opts into Iris's
+        ``shadowHardwareFiltering``; for those, ``compare_sampler`` (a GL
+        sampler object with compare mode and linear filtering) is bound to the
+        unit, matching what Iris does to the texture. Every other binding
+        resets the unit to no sampler object, so the texture's own nearest
+        parameters apply exactly as before.
+        """
         location = self.location(name)
         if location is not None:
             glActiveTexture(GL_TEXTURE0 + unit)
             glBindTexture(GL_TEXTURE_2D, texture)
+            shadow = self.is_shadow_sampler(name)
+            glBindSampler(unit, compare_sampler if shadow else 0)
             glUniform1i(location, unit)
+
+    def is_shadow_sampler(self, name: str) -> bool:
+        if not hasattr(self, "_shadow_samplers"):
+            self._shadow_samplers = set()
+            count = glGetProgramiv(self.handle, GL_ACTIVE_UNIFORMS)
+            for index in range(count):
+                uniform_name, _size, uniform_type = glGetActiveUniform(self.handle, index)
+                if uniform_type == GL_SAMPLER_2D_SHADOW:
+                    self._shadow_samplers.add(uniform_name.decode())
+        return name in self._shadow_samplers
 
     def dispose(self) -> None:
         glDeleteProgram(self.handle)
@@ -425,6 +446,28 @@ def _make_shadow_target(resolution: int) -> tuple[int, int]:
     return fbo, depth
 
 
+def _make_depth_only_target(width: int, height: int) -> tuple[int, int]:
+    """A depth-only FBO holding a standalone copy of the scene depth.
+
+    Iris hands gbuffers programs depth *copies*, never the live attachment:
+    ``depthtex1`` is the pre-translucent opaque copy
+    (``RenderTargets.copyPreTranslucentDepth`` into ``noTranslucents``,
+    unconditionally before deferred/translucent rendering in Iris 1.7.6), while
+    ``depthtex0`` is live during translucents. The harness mirrors that by
+    blitting its opaque-pass depth into this texture and binding it as
+    ``depthtex1`` for the water program.
+    """
+    depth = _make_depth_texture(width, height)
+    fbo = glGenFramebuffers(1)
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth, 0)
+    glDrawBuffers(1, [GL_NONE])
+    glReadBuffer(GL_NONE)
+    _require_complete("depth snapshot")
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    return fbo, depth
+
+
 def _require_complete(label: str) -> None:
     status = glCheckFramebufferStatus(GL_FRAMEBUFFER)
     if status != GL_FRAMEBUFFER_COMPLETE:
@@ -458,6 +501,72 @@ def sun_texture(size: int = 128) -> np.ndarray:
         axis=-1,
     )
     return np.dstack([(np.clip(rgb, 0, 1) * 255).astype(np.uint8), (alpha * 255).astype(np.uint8)[..., None]])
+
+
+def clouds_texture(size: int = 512, seed: int = 23) -> np.ndarray:
+    """A stand-in for Minecraft's ``clouds.png``: white cells on transparency.
+
+    Vanilla clouds are hard-edged cellular blobs, so this is thresholded value
+    noise with one soft step, and an edge fade so the clamped texture wrap
+    never shows. Alpha-only imagery: the pass re-lights the RGB itself.
+    """
+    from PIL import Image as _Image
+
+    rng = np.random.default_rng(seed)
+    noise = np.zeros((size, size), np.float32)
+    for cells, weight in ((5, 1.0), (9, 0.55), (17, 0.30)):
+        base = (rng.random((cells, cells)) * 255).astype(np.uint8)
+        up = np.asarray(
+            _Image.fromarray(base, "L").resize((size, size), _Image.BILINEAR), np.float32
+        ) / 255.0
+        noise += weight * up
+    noise /= 1.85
+    alpha = np.clip((noise - 0.52) / 0.16, 0.0, 1.0)
+    y, x = np.mgrid[0:size, 0:size]
+    edge = np.clip(
+        np.minimum.reduce([x + 1, size - x, y + 1, size - y]) / (size * 0.08), 0.0, 1.0
+    )
+    alpha *= edge
+    rgb = np.ones((size, size, 3), np.float32)
+    return np.dstack([(rgb * 255).astype(np.uint8), (alpha * 255).astype(np.uint8)[..., None]])
+
+
+def clouds_layer(height: float = 108.0, extent: float = 1400.0, size: int = 512) -> RawBatch:
+    """A flat cloud plane at ``height``, UV-mapped across the whole texture.
+
+    One big top-facing grid, like Minecraft's cloud skin stretched over the
+    visible sky. Kept well above the island so terrain occludes it correctly,
+    and wide enough that its edges sit beyond the horizon in every camera.
+    """
+    corners = np.array([[-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]])
+    positions, uvs, indices = [], [], []
+    step = extent / 48.0
+    half = extent * 0.5
+    for i in range(48):
+        for j in range(48):
+            x0, z0 = -half + i * step, -half + j * step
+            base = len(positions)
+            for corner in corners:
+                positions.append(
+                    [x0 + corner[0] * step, height, z0 + corner[2] * step]
+                )
+                uvs.append(
+                    [
+                        (x0 + corner[0] * step + half) / extent,
+                        1.0 - (z0 + corner[2] * step + half) / extent,
+                    ]
+                )
+            indices.append([base, base + 1, base + 2])
+            indices.append([base + 2, base + 3, base])
+    count = len(positions)
+    return RawBatch(
+        positions,
+        np.tile([0.0, 1.0, 0.0], (count, 1)),
+        uvs,
+        np.ones((count, 4), np.float32),
+        np.ones((count, 2), np.float32),
+        indices,
+    )
 
 
 def moon_texture(size: int = 128) -> np.ndarray:
@@ -651,11 +760,23 @@ class PreviewRenderer:
         height: int = 540,
         overrides: dict[str, str] | None = None,
         undefined: set[str] | None = None,
+        frame_time: float = 12.0,
+        underwater_eye: bool = False,
     ) -> None:
         self.shaders_root = shaders_root
         self.width, self.height = width, height
         self.overrides = dict(overrides or {})
         self.undefined = set(undefined or set())
+        # Continuous seconds fed to Iris's frameTimeCounter. Fixed by default so
+        # existing preview evidence stays byte-for-byte reproducible.
+        self.frame_time = float(frame_time)
+        # Iris's isEyeInWater: 1 when the camera is submerged in water, 2 in
+        # lava, 0 in air. Off by default so every existing command keeps the
+        # 0 state and its evidence stays reproducible; only an explicit
+        # --underwater-eye (or a direct constructor call) sets water. The pack
+        # reads it only under AURELIA_WATER_UNDERWATER, so setting it while the
+        # option is compiled out is a harmless no-op.
+        self.underwater_eye = bool(underwater_eye)
         self.context = Context(width, height)
         self._programs: dict[str, Program] = {}
         self._geometry: dict[tuple, tuple[int, int, int]] = {}
@@ -674,6 +795,21 @@ class PreviewRenderer:
         )
         self._targets[0] = (self.scene_fbo, self.scene_color, width, height)
         self.shadow_fbo, self.shadow_depth = _make_shadow_target(self.shadow_resolution)
+        # Iris's shadowHardwareFiltering: depth compare (receiver <= stored)
+        # with bilinear filtering. Applied only where a program declares the
+        # sampler as sampler2DShadow; see Program.sampler.
+        self.shadow_compare_sampler = glGenSamplers(1)
+        glSamplerParameteri(self.shadow_compare_sampler, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE)
+        glSamplerParameteri(self.shadow_compare_sampler, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL)
+        glSamplerParameteri(self.shadow_compare_sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glSamplerParameteri(self.shadow_compare_sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glSamplerParameteri(self.shadow_compare_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glSamplerParameteri(self.shadow_compare_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        # A standalone copy of the opaque depth, blitted between the opaque pass
+        # and the water pass so gbuffers_water can read the floor behind the
+        # water as Iris's depthtex1 (the pre-translucent copy; depthtex0 is
+        # live during translucents). Allocated once, reused every frame.
+        self.depth_copy_fbo, self.depth_copy = _make_depth_only_target(width, height)
 
     def _target(self, index: int) -> tuple[int, int, int, int]:
         """The (fbo, colour, width, height) for a colour target, allocated lazily."""
@@ -704,8 +840,11 @@ class PreviewRenderer:
         self._targets.clear()
         if self.scene_depth:
             glDeleteTextures(1, [self.scene_depth])
+        glDeleteFramebuffers(1, [self.depth_copy_fbo])
+        glDeleteTextures(1, [self.depth_copy])
         glDeleteFramebuffers(1, [self.shadow_fbo])
         glDeleteTextures(1, [self.shadow_depth])
+        glDeleteSamplers(1, [self.shadow_compare_sampler])
         for program in self._programs.values():
             program.dispose()
         self.context.close()
@@ -733,9 +872,19 @@ class PreviewRenderer:
             "cameraPosition": np.asarray(camera.eye, np.float32),
             "aureliaAdaptiveQuality": float(adaptive),
             "aureliaSmoothedFrameTime": 0.0165,
+            # Continuous seconds; the distant-rain curtain animates from this,
+            # and water animation will read it too. The value is settable so a
+            # motion preview can step it; the default keeps previews fixed and
+            # therefore deterministic.
+            "frameTimeCounter": self.frame_time,
             "aureliaAdaptiveShadowFilterSamples": 1.0 + 8.0 * float(adaptive),
             "alphaTestRef": 0.1,
             "entityColor": np.zeros(4, np.float32),
+            # Iris's camera submersion state. 0 (air) by default; 1 (water) only
+            # when this renderer was built for an underwater shot. The pack
+            # declares and reads it only under AURELIA_WATER_UNDERWATER, so this
+            # is a no-op everywhere else.
+            "isEyeInWater": 1 if self.underwater_eye else 0,
         }
 
     # -- frame ------------------------------------------------------------- #
@@ -752,22 +901,29 @@ class PreviewRenderer:
         common = self._common_uniforms(camera, sky, adaptive)
         view = camera.view()
         projection = perspective(camera.fov, self.width / self.height, _NEAR, _FAR)
+        # The sky stage rebuilds its ray from the pixel through the inverse
+        # projection (Iris's gbuffers_skybasic convention), so these must be
+        # present exactly as Iris provides them.
+        common["gbufferProjectionInverse"] = np.linalg.inv(projection)
+        common["viewWidth"] = float(self.width)
+        common["viewHeight"] = float(self.height)
         eye = np.asarray(camera.eye, np.float32)
         light = self._light_matrices(camera, sky) if self.shadows_enabled else None
 
         atlas_texture = _make_rgba_texture(atlas.shape[1], atlas.shape[0], atlas)
         sun = _make_rgba_texture(128, 128, sun_texture())
         moon = _make_rgba_texture(128, 128, moon_texture())
+        clouds = _make_rgba_texture(512, 512, clouds_texture())
 
         started = time.perf_counter()
         if self.shadows_enabled:
             self._render_shadow(batches, light, atlas_texture, eye, sky)
-        self._render_scene(batches, camera, sky, common, view, projection, light, eye, atlas_texture, sun, moon, draw_sky)
+        self._render_scene(batches, camera, sky, common, view, projection, light, eye, atlas_texture, sun, moon, clouds, draw_sky)
         image = self._run_composite_passes(common)
         glFinish()
         elapsed_ms = (time.perf_counter() - started) * 1000.0
 
-        for texture in (atlas_texture, sun, moon):
+        for texture in (atlas_texture, sun, moon, clouds):
             glDeleteTextures(1, [texture])
         stats = {
             "frame_ms": elapsed_ms,
@@ -822,8 +978,30 @@ class PreviewRenderer:
                 self._bind(program, batch, light_view, light_projection, eye, sky.daylight)
                 glDrawElements(GL_TRIANGLES, batch.index_count, GL_UNSIGNED_INT, ctypes.c_void_p(0))
 
+    def _snapshot_depth(self) -> int:
+        """Blit the opaque-pass depth into the standalone depth texture.
+
+        Called after the opaque/cutout pass and before water, so the water
+        program reads the terrain floor depth behind the water surface. This
+        blit is the harness equivalent of Iris's pre-translucent copy, bound
+        as ``depthtex1`` (``depthtex0`` is live during translucents and is not
+        what the water program reads).
+        """
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, self.scene_fbo)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, self.depth_copy_fbo)
+        glBlitFramebuffer(
+            0, 0, self.width, self.height,
+            0, 0, self.width, self.height,
+            GL_DEPTH_BUFFER_BIT, GL_NEAREST,
+        )
+        # Restore the scene target: this runs mid-scene, and the caller keeps
+        # drawing into it. Leaving the default framebuffer bound here silently
+        # sends the water and cloud passes to the window instead of colortex0.
+        glBindFramebuffer(GL_FRAMEBUFFER, self.scene_fbo)
+        return self.depth_copy
+
     def _render_scene(
-        self, batches, camera, sky, common, view, projection, light, eye, atlas, sun, moon, draw_sky
+        self, batches, camera, sky, common, view, projection, light, eye, atlas, sun, moon, clouds, draw_sky
     ) -> None:
         glBindFramebuffer(GL_FRAMEBUFFER, self.scene_fbo)
         glViewport(0, 0, self.width, self.height)
@@ -845,8 +1023,15 @@ class PreviewRenderer:
 
         water = batches["water"]
         if water.count:
+            water_program = self.program("gbuffers_water")
+            # Snapshot the opaque depth only when the water program actually
+            # reads depthtex1 (AURELIA_WATER_DEPTH). With the option compiled
+            # out the uniform is stripped, so the default path pays no copy.
+            depth_texture = None
+            if water_program.location("depthtex1") is not None:
+                depth_texture = self._snapshot_depth()
             self._draw_geometry(
-                self.program("gbuffers_water"),
+                water_program,
                 water,
                 camera,
                 common,
@@ -859,7 +1044,32 @@ class PreviewRenderer:
                 blend=True,
                 depth_write=False,
                 alpha_test=0.0,
+                depth_texture=depth_texture,
             )
+
+        # The pack's own cloud pass on real cloud geometry: same upload path,
+        # same fog contract, so the vanilla-slab criticism can be judged
+        # against what gbuffers_clouds actually produces.
+        self._draw_clouds(common, view, projection, eye, sky, clouds)
+
+    def _draw_clouds(self, common, view, projection, eye, sky, clouds) -> None:
+        program = self.program("gbuffers_clouds")
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LEQUAL)
+        glDepthMask(GL_FALSE)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        # The plane is top-facing; underwater and ground cameras see its
+        # underside, so both faces must draw.
+        glDisable(GL_CULL_FACE)
+        program.use()
+        for name, value in common.items():
+            program.set(name, value)
+        program.set("alphaTestRef", 0.0)
+        program.sampler("gtexture", 0, clouds)
+        batch = clouds_layer()
+        self._bind(program, batch, view, projection, eye, sky.daylight)
+        glDrawElements(GL_TRIANGLES, batch.index_count, GL_UNSIGNED_INT, ctypes.c_void_p(0))
 
     def _draw_sky(self, program: Program, common: dict, view: np.ndarray, projection: np.ndarray) -> None:
         glDisable(GL_DEPTH_TEST)
@@ -884,7 +1094,8 @@ class PreviewRenderer:
         glDisable(GL_CULL_FACE)
         program.use()
         view_space = camera.view()[:3, :3]
-        for texture, world_direction in ((sun, sky.sun_direction), (moon, sky.moon_direction)):
+        # Iris's renderStage: MC_RENDER_STAGE_SUN = 4, MC_RENDER_STAGE_MOON = 5.
+        for texture, world_direction, stage in ((sun, sky.sun_direction, 4), (moon, sky.moon_direction, 5)):
             # Skip a body that has set below the horizon. View space looks down
             # -z, so a direction in front of the camera has a *negative* z: the
             # test has to be >=, not <=, or it discards everything visible.
@@ -894,6 +1105,7 @@ class PreviewRenderer:
             if view_direction[2] >= -0.02:
                 continue
             program.sampler("gtexture", 0, texture)
+            program.set("renderStage", stage)
             # The billboard is built in view space, so only the projection applies.
             quad = view_billboard(view_direction)
             self._bind(program, quad, identity(), projection, None, 1.0)
@@ -914,6 +1126,7 @@ class PreviewRenderer:
         blend: bool = False,
         depth_write: bool = True,
         alpha_test: float = 0.1,
+        depth_texture: int | None = None,
     ) -> None:
         glEnable(GL_DEPTH_TEST)
         glDepthFunc(GL_LEQUAL)
@@ -933,7 +1146,11 @@ class PreviewRenderer:
         if light is not None:
             program.set("shadowModelView", light[0])
             program.set("shadowProjection", light[1])
-            program.sampler("shadowtex0", 1, self.shadow_depth)
+            program.sampler("shadowtex0", 1, self.shadow_depth, self.shadow_compare_sampler)
+        if depth_texture is not None:
+            # Iris's depthtex1 is the pre-translucent opaque copy. Bound on unit
+            # 2 to leave the atlas (0) and shadow map (1) where they are.
+            program.sampler("depthtex1", 2, depth_texture)
         self._bind(program, batch, view, projection, eye, sky.daylight)
         glDrawElements(GL_TRIANGLES, batch.index_count, GL_UNSIGNED_INT, ctypes.c_void_p(0))
 
@@ -958,7 +1175,12 @@ class PreviewRenderer:
         glBindVertexArray(vao)
 
     def _geometry_for(self, batch, eye: np.ndarray | None, daylight: float) -> tuple[int, int, int]:
-        key = (id(batch), round(float(daylight), 4), eye is None)
+        # The uploaded positions are rebased onto the eye (see _upload_batch),
+        # so the eye VALUE is part of the key: keying only on `eye is None`
+        # reused viewpoint N's eye-relative VAO for viewpoint N+1, rendering
+        # every contact-sheet tile after the first from a wrong eye position.
+        eye_key = None if eye is None else (float(eye[0]), float(eye[1]), float(eye[2]))
+        key = (id(batch), round(float(daylight), 4), eye_key)
         if key in self._geometry:
             return self._geometry[key][0], self._geometry[key][1], self._geometry[key][2]
 
@@ -1027,7 +1249,11 @@ class PreviewRenderer:
         program.sampler("depthtex0", unit, self.scene_depth)
         unit += 1
         if self.shadows_enabled:
-            program.sampler("shadowtex0", unit, self.shadow_depth)
+            program.sampler("shadowtex0", unit, self.shadow_depth, self.shadow_compare_sampler)
+            unit += 1
+            # Iris's shadowtex1 is the opaque-caster map; with
+            # shadowTranslucent = false it holds the same depth as shadowtex0.
+            program.sampler("shadowtex1", unit, self.shadow_depth)
 
 
 def _read_pixels(width: int, height: int) -> np.ndarray:

@@ -99,18 +99,62 @@ def camera_for(name: str) -> Camera:
         "skyside": Camera(eye=(0.0, 24.0, 0.0), yaw=1.35, pitch=0.30, fov=75.0),
         # Below the surface, looking back up at the underside of the water.
         "underwater": Camera(eye=(0.0, 12.0, -30.0), yaw=0.0, pitch=0.10, fov=75.0),
+        # Submerged viewpoints for the underwater atmosphere. Kept out of the
+        # default CAMERAS contact sheet on purpose: adding them there would
+        # change every existing sheet. Select one explicitly with
+        # `--camera X --underwater-eye`. Eyes sit over open water (seabed height
+        # <= 3), not inside a terrain column, and look toward the island.
+        "underwater_shallow": Camera(eye=(0.0, 13.4, -40.0), yaw=0.0, pitch=0.05, fov=75.0),
+        "underwater_medium": Camera(eye=(0.0, 9.5, -40.0), yaw=0.0, pitch=0.03, fov=75.0),
+        "underwater_deep": Camera(eye=(-42.0, -4.0, -42.0), yaw=np.pi * 0.25, pitch=0.06, fov=75.0),
+        "underwater_up": Camera(eye=(0.0, 9.5, -40.0), yaw=0.0, pitch=0.75, fov=75.0),
+        "underwater_down": Camera(eye=(0.0, 9.5, -40.0), yaw=0.0, pitch=-0.55, fov=75.0),
+        # Aimed at the sun for low-sun times (yaw/pitch match the sun's
+        # azimuth/elevation at t≈0.03), so the disc and aureole are judgeable
+        # by day instead of only at dusk.
+        "sunview": Camera(eye=(0.0, 24.0, 0.0), yaw=-2.85, pitch=0.38, fov=75.0),
+        # Aimed near the zenith, where the midnight moon sits (t=0.75 puts the
+        # moon exactly overhead), so the night disc can actually be scored.
+        "nightsky": Camera(eye=(0.0, 24.0, 0.0), yaw=0.30, pitch=1.00, fov=75.0),
+        # High above the island, looking down at TERRAIN (which writes depth,
+        # unlike the synthetic water): the elevated-camera state that
+        # exercises the distant-rain helper's altitude gate.
+        "skydive": Camera(eye=(0.0, 95.0, 0.0), yaw=0.30, pitch=-0.85, fov=75.0),
+        # Mid-altitude for the fade band (+40ish over the plateau).
+        "balcony": Camera(eye=(0.0, 62.0, -18.0), yaw=0.30, pitch=-0.55, fov=75.0),
     }
     if name not in presets:
         raise ValueError(f"unknown camera {name!r}; choose from {', '.join(sorted(presets))}")
     return presets[name]
 
 
-CAMERAS = ("overview", "shore", "canopy", "glow", "sky", "skyside", "underwater")
+CAMERAS = ("overview", "shore", "canopy", "glow", "sky", "skyside", "underwater", "sunview", "nightsky", "skydive", "balcony")
+
+# Extra views that are selectable but never part of the default contact sheet.
+UNDERWATER_CAMERAS = (
+    "underwater_shallow",
+    "underwater_medium",
+    "underwater_deep",
+    "underwater_up",
+    "underwater_down",
+)
 
 
 def write_png(path: Path, image: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(image[:, :, :3], mode="RGB").save(path)
+
+
+def output_filename(preset: str, view: str, name: str, time: float, rain: float) -> str:
+    """Deterministic CLI output name for one per-camera frame or contact sheet.
+
+    Dry renders (``rain == 0``, the default) keep the legacy name so existing
+    evidence stays byte-for-byte reproducible. Any rainy render appends
+    ``-rain<value>`` so it can never silently overwrite the dry frame in the
+    same ``--out`` directory (``:g`` formatting keeps it deterministic).
+    """
+    suffix = "" if rain == 0 else f"-rain{rain:g}"
+    return f"{preset.lower()}-{view}-{name}-t{time:g}{suffix}.png"
 
 
 def contact_sheet(tiles: list[tuple[str, np.ndarray]], columns: int = 2, gap: int = 4) -> np.ndarray:
@@ -143,13 +187,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--camera",
         default=None,
-        choices=CAMERAS,
+        choices=CAMERAS + UNDERWATER_CAMERAS,
         help="viewpoint; default renders a contact sheet of every viewpoint",
     )
     parser.add_argument("--sheet-only", action="store_true", help="write only the contact sheet")
     parser.add_argument("--time", type=float, default=0.28, help="time of day, 0.25 is noon")
     parser.add_argument("--rain", type=float, default=0.0, help="rainStrength 0..1")
+    parser.add_argument(
+        "--frame-time",
+        type=float,
+        default=12.0,
+        help="frameTimeCounter in continuous seconds; default 12.0 matches existing evidence",
+    )
     parser.add_argument("--underwater", action="store_true", help="deprecated alias for --camera underwater")
+    parser.add_argument(
+        "--underwater-eye",
+        action="store_true",
+        help=(
+            "set Iris isEyeInWater to 1 (camera submerged in water). Independent "
+            "of --camera/--underwater so existing evidence, which does not set it, "
+            "stays byte-for-byte reproducible"
+        ),
+    )
     parser.add_argument("--debug", type=int, default=None, help="override AURELIA_DEBUG_VIEW")
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=540)
@@ -192,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
                 height=args.height,
                 overrides=overrides,
                 undefined=undefined,
+                frame_time=args.frame_time,
+                underwater_eye=args.underwater_eye,
             )
             try:
                 sky = Sky(time=args.time, rain=args.rain)
@@ -211,9 +272,9 @@ def main(argv: list[str] | None = None) -> int:
                         continue
                     # The debug view and the viewpoint both belong in the name:
                     # overwriting one filename hides exactly the comparison you
-                    # rendered it for.
+                    # rendered it for. Rain too: see output_filename.
                     view = "normal" if args.debug in (None, 0) else f"debug{args.debug}"
-                    path = args.out / f"{preset.lower()}-{view}-{viewpoint}-t{args.time:g}.png"
+                    path = args.out / output_filename(preset, view, viewpoint, args.time, args.rain)
                     write_png(path, image)
                     written.append(path)
 
@@ -223,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
                     columns = 2 if len(tiles) > 2 else len(tiles)
                     sheet = contact_sheet(tiles, columns=columns)
                     view = "normal" if args.debug in (None, 0) else f"debug{args.debug}"
-                    path = args.out / f"{preset.lower()}-{view}-sheet-t{args.time:g}.png"
+                    path = args.out / output_filename(preset, view, "sheet", args.time, args.rain)
                     write_png(path, sheet)
                     written.append(path)
                     print(f"  contact sheet: {' | '.join(name for name, _ in tiles)}")

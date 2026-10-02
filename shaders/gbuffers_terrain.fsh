@@ -1,6 +1,7 @@
 #version 330 compatibility
 
 #include "/lib/options.glsl"
+#define AURELIA_FRAME_FRAGMENT
 #include "/lib/lighting.glsl"
 #include "/lib/debug.glsl"
 

@@ -7,18 +7,28 @@
 // grade so it rides the same pipeline as everything else. Minecraft's real
 // gbuffers_weather rain stays responsible for nearby drops.
 //
-// COST: per pixel it is one depth fetch, one matrix unprojection, and two
-// curtain layers of ~a dozen ALU ops each. No textures, no loops, no extra
-// buffers or passes. The whole path early-outs when rainStrength is ~zero,
-// so clear weather pays one uniform compare.
+// COST: in rain, per pixel it is one depth fetch, one matrix unprojection, one
+// or two curtain layers of ~a dozen ALU ops each, PLUS the camera-height
+// estimator below: six further depth fetches and unprojections in a six-
+// iteration loop. That estimator reads fixed screen positions, so its result is
+// identical for every pixel; it is a candidate to hoist into final.vsh as a
+// flat varying if this option is ever enabled by default (it is OFF in every
+// preset). No extra buffers or passes. The whole path early-outs when
+// rainStrength is ~zero, so clear weather pays one uniform compare.
 //
 // This file deliberately declares no uniforms of its own: depthtex0,
 // frameTimeCounter, rainStrength, gbufferProjectionInverse and the celestial
 // helpers come from the final pass / lib look contract.
 
-// One cheap position hash. Two multiplies and a sin; no texture lookups.
+// One cheap position hash, fract-based (no sin). The row index grows with
+// frameTimeCounter, and a sin() of a large argument loses its low bits in fp32
+// (and on Apple GPUs' fast-math sin), so the old sine hash degraded into
+// visible banding the longer a session ran. This form stays well-conditioned
+// for any row magnitude that fits a float. No texture lookups.
 float aureliaRainHash(vec2 cell) {
-    return fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+    vec3 p3 = fract(vec3(cell.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
 
 // One curtain layer: narrow, slightly slanted falling streaks.
@@ -86,13 +96,17 @@ float aureliaCameraHeightAboveSurface(vec2 screen) {
     // count - they are not the surface the player stands relative to.
     float closestToLevel = -1.0e5;   // sentinel: none found yet
     for (int i = 0; i < 6; ++i) {
-        float depth = texture(depthtex0, samples[i]).r;
+        float depth = textureLod(depthtex0, samples[i], 0.0).r;
         if (depth < 1.0) {
             vec4 clip = vec4(samples[i] * 2.0 - 1.0, depth, 1.0);
             vec4 viewPos = gbufferProjectionInverse * clip;
             viewPos /= viewPos.w;
-            if (viewPos.y < 0.0) {
-                closestToLevel = max(closestToLevel, viewPos.y);
+            // WORLD-axes height: view-space y tilts with camera pitch (looking
+            // down, every surface has view-y near zero), so rotate to player
+            // space before judging "below the camera".
+            float height = (gbufferModelViewInverse * vec4(viewPos.xyz, 0.0)).y;
+            if (height < 0.0) {
+                closestToLevel = max(closestToLevel, height);
             }
         }
     }
@@ -137,7 +151,9 @@ vec3 aureliaDistantRain(vec2 screen) {
     // subtly in the middle distance, becomes useful over distant terrain and
     // the sky, and never reaches the contrast of a real nearby drop just
     // because the depth mask saturated.
-    float depth = texture(depthtex0, screen).r;
+    // textureLod: this point is reached after data-dependent early returns, where
+    // an implicit-derivative texture() has undefined LOD.
+    float depth = textureLod(depthtex0, screen, 0.0).r;
     vec4 clip = vec4(screen * 2.0 - 1.0, depth, 1.0);
     vec4 viewPos = gbufferProjectionInverse * clip;
     viewPos /= viewPos.w;

@@ -1,21 +1,22 @@
 #version 330 compatibility
 
-// Cloud pass: Minecraft's vanilla clouds. This pack previously had no cloud
-// program, so Iris fell back to gbuffers_textured, whose only job is "leave
-// the vanilla look alone" - clouds therefore rendered as the raw texture with
-// no relationship to our sky, fog or light, which is what made them read as a
-// flat white slab against the gradient.
+// Cloud pass: Minecraft's vanilla cloud geometry, re-lit by the pack.
 //
-// This program keeps the vanilla cloud texture (we have no volumetric cloud
-// system yet - that is the later clouds phase) but re-lights it in one place:
+// Face lighting (sun/moon wrap, golden rim, overcast, night) is evaluated per
+// vertex in gbuffers_clouds.vsh from the real face normals; this stage adds the
+// only per-pixel terms that depend on the view ray and applies the pack's fog:
 //
-//   - sRGB decode, consistent with the rest of the pack;
-//   - lit with the contract sun colour by facing (a soft directional term);
-//   - pulled toward the sky colour so cloud tint follows time of day;
-//   - the pack's exponential fog at cloud height, so clouds fade like terrain.
+//   - alpha from the cloud texture (the vanilla shape; the texture's alpha is
+//     binary, so no edge softening is attempted on it);
+//   - under AURELIA_CLOUDS_SOFT: a sun-ward silver lining on vertical faces and
+//     a golden-hour warmth gradient toward the sun;
+//   - the pack's fog at cloud distance so the far deck dissolves into the sky.
 //
-// No shadow lookup: through-cloud shadows need a volumetric layer to be right.
-// No normals are provided by this pass in 1.20.1, so lighting stays analytical.
+// Vanilla draws fancy clouds twice (a colour-masked depth prepass, then the
+// colour pass). Both run this program; the prepass's colour is masked off by
+// the game, and the alpha test below keeps its depth footprint identical.
+//
+// No shadow lookup: clouds neither receive nor cast through this layer.
 
 #include "/lib/options.glsl"
 #define AURELIA_FRAME_FRAGMENT
@@ -23,10 +24,14 @@
 #include "/lib/look.glsl"
 #include "/lib/sky.glsl"
 
+// Share of the pack's fog density applied at cloud height.
+const float AURELIA_CLOUD_FOG_SHARE = 0.45;
+
 uniform sampler2D gtexture;
 
 in vec2 texcoord;
-in vec4 vertexColor;
+in vec4 cloudLight;
+in float cloudSide;
 in vec3 playerPosition;
 
 /* RENDERTARGETS: 0 */
@@ -37,61 +42,45 @@ void main() {
     aureliaSceneColor = vec4(1.0);
 #else
     vec4 textureColor = texture(gtexture, texcoord);
-    if (textureColor.a < 0.01) discard;
+    // Vanilla's cloud shader discards below 0.1 as well.
+    if (textureColor.a < 0.1) discard;
 
-    vec3 color = aureliaSrgbToLinear(textureColor.rgb) * vertexColor.rgb;
-
-    // Cloud tint follows the sky. The sun colour keeps golden-hour clouds
-    // golden instead of grey-blue slabs.
-    vec3 sunDirection = aureliaSunDirection();
-    float day = aureliaSunVisibility();
-    vec3 sunTint = aureliaSunColor(max(sunDirection.y, 0.0));
-    vec3 tint = mix(aureliaSkyColorLinear(), sunTint, 0.22 * day);
-    color *= mix(vec3(1.0), tint, 0.35);
-
-    // Cheap directional shading: cloud tops are nominally sun-facing.
-    float top = clamp(sunDirection.y, 0.0, 1.0);
-    color *= 0.82 + 0.18 * top;
+    // The cloud texture is white; its RGB only matters to a resource pack that
+    // tints it. Squaring is the cheap sRGB decode - it is multiplied by 1.0 in
+    // the shipped texture, so the approximation error is zero there.
+    vec3 color = cloudLight.rgb * (textureColor.rgb * textureColor.rgb);
 
 #ifdef AURELIA_CLOUDS_SOFT
-    // Soft cloud treatment (P4): analytic character on the vanilla slab. ALU
-    // only: a few smoothsteps, one pow and two luma dots; no texture read,
-    // no extra pass, no new buffer.
-    // The texture alpha doubles as pseudo-thickness: dense cores shade
-    // slightly while thin edges stay bright, which reads as self-depth.
-    float core = smoothstep(0.30, 0.90, textureColor.a);
-    color *= 1.05 - 0.15 * core;
-
-    // Sun-relative warmth: the whole deck picks up the contract sunset colour
-    // through the same golden-hour bell the sky dome uses (luminance-
-    // preserving, so it tints without blowing out), plus a sunward gradient
-    // for extra warmth near the disc. Zero at noon and, via day, at night.
-    float sunward = max(dot(normalize(playerPosition + vec3(0.0, 1e-3, 0.0)), sunDirection), 0.0);
-    float golden = aureliaHorizonFactor(max(sunDirection.y, 0.0)) * day;
-    float cloudLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    float warm = golden * (0.30 + 0.45 * pow(sunward, 3.0));
-    color = mix(color, sunTint * max(cloudLuma, 1e-3), warm);
-
-    // Rain response: desaturate toward luma and darken, keyed to rainStrength
-    // with the same flatten weight the sky dome uses. No parallel palette.
+    vec3 viewDirection = normalize(playerPosition + vec3(0.0, 1e-4, 0.0));
+    vec3 sunDirection = aureliaSunDirection();
+    float day = aureliaSunVisibility();
     float rain = clamp(rainStrength, 0.0, 1.0);
-    float rainLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    color = mix(color, vec3(rainLuma), AURELIA_RAIN_SKY_FLATTEN * rain);
-    color *= 1.0 - 0.30 * rain;
+    vec3 sunTint = aureliaSunColor(max(sunDirection.y, 0.0));
+    float sunward = max(dot(viewDirection, sunDirection), 0.0);
 
-    // Softened silhouettes: the fringe alpha is eaten away so cloud edges
-    // dissolve instead of cutting hard, while body coverage (alpha above the
-    // ramp) is untouched. Multiplicative, so it can only ever fade the edge.
-    float softAlpha = textureColor.a * smoothstep(0.0, 0.30, textureColor.a);
-#else
-    float softAlpha = textureColor.a;
+    // Golden-hour warmth: the whole deck leans toward the contract sunset
+    // colour through the same bell the sky dome uses (luminance-preserving),
+    // strongest toward the sun. Zero at noon, at night and (via 1 - rain) under
+    // an overcast.
+    float golden = aureliaHorizonFactor(max(sunDirection.y, 0.0)) * day * (1.0 - rain);
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color = mix(color, sunTint * max(luma, 1e-3), golden * (0.25 + 0.45 * sunward * sunward * sunward));
+
+    // Silver lining: looking toward the sun, the thin vertical flanks scatter
+    // light forward. Additive, vertical faces only, off in overcast and night.
+    float sunward2 = sunward * sunward;
+    float sunward4 = sunward2 * sunward2;
+    color += sunTint * (0.30 * sunward4 * sunward4 * cloudSide * day * (1.0 - rain));
 #endif
 
-    // Fog at cloud height fades distant clouds into the sky so they no longer
-    // end in a hard edge against the gradient. playerPosition's length is the
-    // camera-relative distance in world axes, which is the right metric here.
-    color = aureliaApplyFogContract(color, playerPosition, AURELIA_FOG_DENSITY, rainStrength);
+    // Fog at cloud distance: playerPosition is camera-relative in WORLD axes,
+    // which is both the right distance and the right direction for the fog
+    // colour (a view-space vector would tilt the horizon with camera pitch).
+    // The deck is far above the haze layer terrain sits in, so it takes a
+    // thinner share of the density: at full density the nearest cloud overhead
+    // was already half dissolved and the deck read as sky-coloured mush.
+    color = aureliaApplyFogContract(color, playerPosition, AURELIA_FOG_DENSITY * AURELIA_CLOUD_FOG_SHARE, rainStrength);
 
-    aureliaSceneColor = vec4(color, softAlpha * vertexColor.a);
+    aureliaSceneColor = vec4(color, textureColor.a * cloudLight.a);
 #endif
 }

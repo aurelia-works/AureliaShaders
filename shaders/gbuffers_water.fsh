@@ -45,7 +45,15 @@ in vec3 playerPosition;
 layout(location = 0) out vec4 aureliaSceneColor;
 
 void main() {
-    vec4 albedo = aureliaDecodeSrgbTerrain(texture(gtexture, texcoord), vertexColor);
+    vec4 waterTexture = texture(gtexture, texcoord);
+#ifdef AURELIA_WATER_SURFACE
+    // Flatten the vanilla water texture's brightness pattern 70% toward a
+    // constant: in game its blocky light/dark tiling dominated the surface
+    // and read as milky noise. The analytic waves carry the motion instead.
+    float waterLuma = dot(waterTexture.rgb, vec3(0.2126, 0.7152, 0.0722));
+    waterTexture.rgb *= mix(1.0, 0.72 / max(waterLuma, 1e-3), 0.7);
+#endif
+    vec4 albedo = aureliaDecodeSrgbTerrain(waterTexture, vertexColor);
     if (albedo.a < alphaTestRef) discard;
 
 #ifdef AURELIA_WATER_SURFACE
@@ -110,6 +118,10 @@ void main() {
         vec3 glint = aureliaSunColor(lightDir.y)
             * (lobe * lobe * sunUp * 1.6 * (1.0 - AURELIA_RAIN_SUN_DIM * rainStrength));
 
+        // The body is lit by the same forward light as terrain, which runs
+        // 1.8x sun (AURELIA_SUN_INTENSITY); water transmits and absorbs, so
+        // it is brought back down or the surface reads milky (seen in game).
+        color *= 0.55;
         // Body colour: the lit albedo absorbed toward cyan (red first).
         vec3 body = color * AURELIA_WATER_BODY_MID;
 #if defined(AURELIA_WATER_DEPTH) || defined(AURELIA_WATER_SHORE)
@@ -147,7 +159,15 @@ void main() {
 
         // Grazing water reflects more and transmits less, so alpha tracks
         // Fresnel; that is the bright rim that reads as a waterline.
-        alpha = mix(albedo.a, 1.0, clamp(fresnel * 0.55, 0.0, 0.55));
+        // Base opacity follows the water column (Beer-Lambert, cheaply): clear
+        // over shallows, nearly opaque body colour once a few blocks deep. In
+        // game a flat alpha either hid the bed (milky) or let sand and gravel
+        // show at full strength through deep water (grey, untinted).
+        float baseAlpha = albedo.a * 0.80;
+#ifdef AURELIA_WATER_DEPTH
+        baseAlpha = mix(baseAlpha, 0.94, smoothstep(0.5, 6.0, waterThickness));
+#endif
+        alpha = mix(baseAlpha, 1.0, clamp(fresnel * 0.55, 0.0, 0.55));
 #ifdef AURELIA_WATER_SHORE
         // Shoreline softness: ease the surface as the column thins to nothing.
         // V1-WATER: the fade stops at 0.70, never 0. Fading to exactly zero made

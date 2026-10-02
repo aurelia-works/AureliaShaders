@@ -53,7 +53,13 @@ void main() {
         // distant rain goes through the same tonemap/sRGB as everything else.
         color += aureliaDistantRain(texcoord);
     #endif
+    // aureliaGrade returns display-encoded sRGB (contrast needs a perceptual
+    // pivot), so it replaces the encode below instead of feeding it.
     color = aureliaGrade(color);
+    // 1-ALU-class interleaved-gradient-noise dither, +-0.5 LSB, hides 8-bit
+    // banding in the smooth sky/fog gradients that the steep curve stretches.
+    color += (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5)
+             * (1.0 / 255.0);
 #elif AURELIA_DEBUG_VIEW == 2
     color = aureliaDebugAdaptive(aureliaSmoothedFrameTime, aureliaAdaptiveQuality);
 #elif AURELIA_DEBUG_VIEW == 3
@@ -72,7 +78,11 @@ void main() {
     color = aureliaDebugShadowBudget(aureliaAdaptiveShadowFilterSamples);
 #endif
 
-    // The scene is linear through grading; only display output gets sRGB.
-    // Debug modes bypass grading but still receive the display transfer.
-    aureliaSceneColor = vec4(aureliaLinearToSrgb(color), scene.a);
+#if AURELIA_DEBUG_VIEW != 0
+    // Debug views bypass grading (and dither) but still get the display transfer.
+    color = aureliaLinearToSrgb(color);
+#endif
+    // Alpha of the screen is meaningless; write an explicit 1.0 instead of
+    // leaking the scene buffer's alpha.
+    aureliaSceneColor = vec4(color, 1.0);
 }

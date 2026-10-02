@@ -171,6 +171,8 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
 
 // The curve lives in lib/look.glsl; the direction-aware fog application lives
 // beside the shared sky palette in lib/sky.glsl. Every pass uses this contract.
-vec3 aureliaApplyFog(vec3 color, vec3 viewPosition) {
-    return aureliaApplyFogContract(color, viewPosition, AURELIA_FOG_DENSITY, rainStrength);
+// Takes the camera-relative PLAYER-space position (world axes): the fog palette
+// compares its direction with world-space sun and zenith vectors.
+vec3 aureliaApplyFog(vec3 color, vec3 playerPosition) {
+    return aureliaApplyFogContract(color, playerPosition, AURELIA_FOG_DENSITY, rainStrength);
 }

@@ -279,19 +279,21 @@ vec3 aureliaUnderwaterColor(vec3 direction, float rain) {
 // rain fades toward the same overcast the sky shows. The distance/density curve
 // itself (aureliaFogFactor) lives in lib/look.glsl. This helper lives here next
 // to the palette it depends on.
-vec3 aureliaApplyFogContract(vec3 color, vec3 viewPosition, float density, float rain) {
-    vec3 direction = normalize(viewPosition);
+// playerPosition: camera-relative, WORLD axes. A view-space vector here tilts
+// the fog palette with camera pitch/yaw, because the palette is world-space.
+vec3 aureliaApplyFogContract(vec3 color, vec3 playerPosition, float density, float rain) {
+    vec3 direction = normalize(playerPosition);
 #ifdef AURELIA_WATER_UNDERWATER
     // Submerged: every fragment in view is seen through the water column, so
     // fade toward the underwater atmosphere on its own denser curve. Lava
     // (isEyeInWater == 2) and air (0) fall through to the air path below.
     if (isEyeInWater == 1) {
         return mix(color, aureliaUnderwaterColor(direction, rain),
-                   aureliaUnderwaterFogFactor(length(viewPosition), rain));
+                   aureliaUnderwaterFogFactor(length(playerPosition), rain));
     }
 #endif
     return mix(color,
                aureliaFogColor(aureliaSkyColorLinear(), aureliaFogColorLinear(),
                                direction, aureliaSunDirection(), rain),
-               aureliaFogFactor(length(viewPosition), density, rain));
+               aureliaFogFactor(length(playerPosition), density, rain));
 }

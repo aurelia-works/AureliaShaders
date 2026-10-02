@@ -162,12 +162,12 @@ void main() {
     }
 #endif
 
-    color = aureliaApplyFog(color, viewPosition);
+    color = aureliaApplyFog(color, playerPosition);
 
 #if AURELIA_DEBUG_VIEW == 1
     color = aureliaDebugLighting(worldNormal, lmcoord);
 #elif AURELIA_DEBUG_VIEW == 5
-    color = vec3(aureliaShadowVisibility(playerPosition, worldNormal, aureliaShadowDirection(), aureliaSunVisibility(), rainStrength));
+    color = vec3(aureliaShadowDebug(playerPosition, worldNormal));
 #endif
 
     aureliaSceneColor = vec4(color, alpha);

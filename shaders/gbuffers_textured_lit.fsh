@@ -12,7 +12,6 @@ in vec2 texcoord;
 in vec2 lmcoord;
 in vec4 vertexColor;
 in vec3 worldNormal;
-in vec3 viewPosition;
 in vec3 playerPosition;
 
 /* RENDERTARGETS: 0 */
@@ -21,7 +20,7 @@ layout(location = 0) out vec4 aureliaSceneColor;
 void main() {
     vec4 albedo = aureliaDecodeSrgbModulation(texture(gtexture, texcoord), vertexColor);
     if (albedo.a < alphaTestRef) discard;
-    vec3 color = aureliaApplyFog(aureliaForwardLight(albedo.rgb, worldNormal, lmcoord, playerPosition), viewPosition);
+    vec3 color = aureliaApplyFog(aureliaForwardLight(albedo.rgb, worldNormal, lmcoord, playerPosition), playerPosition);
 #if AURELIA_DEBUG_VIEW == 1
     color = aureliaDebugLighting(worldNormal, lmcoord);
 #elif AURELIA_DEBUG_VIEW == 5

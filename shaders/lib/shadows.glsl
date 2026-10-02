@@ -46,16 +46,26 @@ float aureliaShadowFourTap(vec3 screenPosition, vec2 texel) {
     );
 }
 
-// Tier budget (fetches): FILTER_MAX 1 -> 1, 2 -> 1, 3 -> 4. Tiers 1 and 2 both
-// take the single filtered tap.
+// Two filtered taps on a short rotated axis: softens the one-texel sawtooth a
+// single bilinear tap leaves on diagonal edges, for one extra fetch.
+float aureliaShadowTwoTap(vec3 screenPosition, vec2 texel) {
+    const vec2 o = vec2(0.5, -0.25);
+    return 0.5 * (aureliaShadowTap(screenPosition, texel, o) +
+                  aureliaShadowTap(screenPosition, texel, -o));
+}
+
+// Tier budget (fetches): FILTER_MAX 1 -> 1, 2 -> 2, 3 -> 4.
 float aureliaShadowFiltered(vec3 screenPosition, vec2 texel) {
-#if AURELIA_SHADOW_FILTER_MAX <= 2
+#if AURELIA_SHADOW_FILTER_MAX == 1
     return aureliaShadowOneTap(screenPosition, texel);
+#elif AURELIA_SHADOW_FILTER_MAX == 2
+    return aureliaShadowTwoTap(screenPosition, texel);
 #else
     #ifdef AURELIA_SHADOW_ADAPTIVE
-        // Uses the Phase 1 8-tick-down / 80-tick-up smoothed quality signal.
-        // Below sustained headroom the single filtered tap is used.
-        if (aureliaAdaptiveQuality < 0.82) return aureliaShadowOneTap(screenPosition, texel);
+        // Phase 1 8-tick-down / 80-tick-up smoothed quality signal; only
+        // sustained headroom reaches the four-fetch tent.
+        if (aureliaAdaptiveQuality < 0.30) return aureliaShadowOneTap(screenPosition, texel);
+        if (aureliaAdaptiveQuality < 0.82) return aureliaShadowTwoTap(screenPosition, texel);
     #endif
     return aureliaShadowFourTap(screenPosition, texel);
 #endif

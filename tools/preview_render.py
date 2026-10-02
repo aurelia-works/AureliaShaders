@@ -157,6 +157,13 @@ class Sky:
         return -self.sun_direction
 
     @property
+    def shadow_light_direction(self) -> np.ndarray:
+        """Iris's shadowLightPosition body: the sun by day, the moon once the
+        sun is below the horizon (Iris flips at sun height 0)."""
+        sun = self.sun_direction
+        return sun if sun[1] >= 0.0 else self.moon_direction
+
+    @property
     def elevation(self) -> float:
         return float(self.sun_direction[1])
 
@@ -865,7 +872,7 @@ class PreviewRenderer:
             "gbufferModelViewInverse": camera.model_view_inverse(),
             "sunPosition": sun_view,
             "moonPosition": (to_view @ sky.moon_direction) * 100.0,
-            "shadowLightPosition": sun_view,
+            "shadowLightPosition": (to_view @ sky.shadow_light_direction) * 100.0,
             "skyColor": sky.sky_color,
             "fogColor": sky.fog_color,
             "rainStrength": float(sky.rain),
@@ -933,25 +940,22 @@ class PreviewRenderer:
         return image, stats
 
     def _light_matrices(self, camera: Camera, sky: Sky) -> tuple[np.ndarray, np.ndarray]:
-        """An orthographic light camera covering ``shadowDistance`` blocks.
+        """The orthographic light camera Iris 1.7 builds (ShadowMatrices).
 
-        The frustum is centred on the eye with a modest forward bias, the way
-        Iris's legacy shadow map is. Centring it a full shadow-distance ahead
-        instead puts the eye on the map's edge: the pack's receiver rejects any
-        sample within two texels of the border, so most of the frame silently
-        reads as fully lit and the shadow map appears to do nothing at all.
+        Centred on the eye, looking along shadowLightPosition from 100 blocks
+        out, half-extent = shadowDistance, near 0.05, far 256. An earlier
+        version used half the extent, which doubled texel density and hid
+        shadow acne the game shows; it also never switched to the moon.
         """
-        direction = sky.sun_direction
-        centre = np.array(camera.forward, np.float64) * (self.shadow_distance * 0.2)
-        centre[1] = 0.0
-        distance = self.shadow_distance * 2.4
+        direction = sky.shadow_light_direction
+        centre = np.zeros(3)
         up = np.array([0.0, 1.0, 0.0])
         if abs(float(direction @ up)) > 0.999:
             up = np.array([0.0, 0.0, 1.0])
-        half = self.shadow_distance * 0.5
+        half = float(self.shadow_distance)
         return (
-            look_at(centre + direction * distance, centre, up),
-            ortho(-half, half, -half, half, 0.05, distance * 2.0),
+            look_at(centre + direction * 100.0, centre, up),
+            ortho(-half, half, -half, half, 0.05, 256.0),
         )
 
     def _render_shadow(self, batches: dict, light, atlas: int, eye: np.ndarray, sky: Sky) -> None:

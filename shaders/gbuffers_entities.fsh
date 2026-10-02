@@ -13,7 +13,6 @@ in vec2 texcoord;
 in vec2 lmcoord;
 in vec4 vertexColor;
 in vec3 worldNormal;
-in vec3 viewPosition;
 in vec3 playerPosition;
 
 /* RENDERTARGETS: 0 */
@@ -24,7 +23,7 @@ void main() {
     if (albedo.a < alphaTestRef) discard;
 
     vec3 color = aureliaForwardLight(albedo.rgb, worldNormal, lmcoord, playerPosition);
-    color = aureliaApplyFog(color, viewPosition);
+    color = aureliaApplyFog(color, playerPosition);
     // Preserve Minecraft's hurt/team overlay without an extra material path.
     // entityColor is another Minecraft sRGB color input; its alpha is a
     // coverage/overlay weight and remains linear.

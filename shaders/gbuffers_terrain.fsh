@@ -12,7 +12,6 @@ in vec2 texcoord;
 in vec2 lmcoord;
 in vec4 vertexColor;
 in vec3 worldNormal;
-in vec3 viewPosition;
 in vec3 playerPosition;
 
 /* RENDERTARGETS: 0 */
@@ -23,7 +22,7 @@ void main() {
     if (albedo.a < alphaTestRef) discard;
 
     vec3 color = aureliaForwardLight(albedo.rgb, worldNormal, lmcoord, playerPosition);
-    color = aureliaApplyFog(color, viewPosition);
+    color = aureliaApplyFog(color, playerPosition);
 
 #if AURELIA_DEBUG_VIEW == 1
     color = aureliaDebugLighting(worldNormal, lmcoord);

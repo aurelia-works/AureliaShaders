@@ -9,7 +9,6 @@ out vec2 texcoord;
 out vec2 lmcoord;
 out vec4 vertexColor;
 out vec3 worldNormal;
-out vec3 viewPosition;
 out vec3 playerPosition;
 
 void main() {
@@ -20,6 +19,6 @@ void main() {
     vertexColor = aureliaDecodeVertexColor(gl_Color);
     aureliaWriteFrameConstants();
     worldNormal = mat3(gbufferModelViewInverse) * (gl_NormalMatrix * gl_Normal);
-    viewPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
+    vec3 viewPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
     playerPosition = (gbufferModelViewInverse * vec4(viewPosition, 1.0)).xyz;
 }

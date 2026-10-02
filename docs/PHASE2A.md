@@ -63,13 +63,14 @@ from entering the linear scene before the sky pass covers it.
 | --- | ---: | ---: | --- |
 | Potato | disabled | — | — |
 | Low | 512 | 64 blocks | 1 filtered |
-| Balanced | 1024 | 96 blocks | 1 filtered |
+| Balanced | 1024 | 96 blocks | 2 filtered |
 | Cinematic | 1536 | 128 blocks | 4-fetch tent |
-| Adaptive | 1024 fixed | 96 blocks | 1 or 4 from smoothed quality |
+| Adaptive | 1024 fixed | 96 blocks | 1, 2 or 4 from smoothed quality |
 
-`Maximum shadow filter` 1 and 2 both take the single hardware-filtered fetch;
-3 takes the four-fetch tent, or one fetch while Adaptive shadow filtering is
-short of headroom.
+`Maximum shadow filter` 1 takes one hardware-filtered fetch, 2 takes a
+two-fetch rotated pair (softens diagonal edges), and 3 takes the four-fetch
+tent, dropping to two or one while Adaptive shadow filtering is short of
+headroom.
 
 The square depth allocations are approximately 0.26M, 1.05M, and 2.36M texels.
 The 1536 Cinematic cap is deliberate: it is materially cheaper than a 2048 map

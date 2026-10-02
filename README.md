@@ -17,9 +17,9 @@ buffers, extra render targets or compute.
   the one sRGB transfer, a fitted filmic curve, saturation and contrast.
 - **Optional shadow map.** One Iris shadow map, directional sun only. Receivers
   sample `shadowtex0` with hardware depth comparison, so one fetch is already a
-  bilinear four-sample PCF. Tiers cost 1, 1 or 4 fetches (`Maximum shadow
-  filter` 1, 2, 3; tier 3 may adapt down to one fetch with Adaptive shadow
-  filtering). Potato turns the map off and also empties the caster pass.
+  bilinear four-sample PCF. Tiers cost 1, 2 or 4 fetches (`Maximum shadow
+  filter` 1, 2, 3; tier 3 may adapt down to two or one fetch with Adaptive
+  shadow filtering). Potato turns the map off and also empties the caster pass.
 - **Frame-constant hoisting.** Sun and moon directions and the linear sky and fog
   colours depend only on uniforms, so they are computed once per vertex and
   cross to the fragment stage as `flat` varyings (`lib/look.glsl`).

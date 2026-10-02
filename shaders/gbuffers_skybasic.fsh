@@ -17,8 +17,6 @@ uniform mat4 gbufferProjectionInverse;
 uniform float viewWidth;
 uniform float viewHeight;
 
-in vec4 vertexColor;
-
 /* RENDERTARGETS: 0 */
 layout(location = 0) out vec4 aureliaSceneColor;
 
@@ -106,6 +104,12 @@ void main() {
     sky = aureliaApplyStars(sky, direction, lightDirection.y, rainStrength);
 #endif
 
+    // Nether (hasCeiling): no sun-driven atmosphere and no celestial bodies,
+    // only Minecraft's own fog colour (see lib/sky.glsl). Covers both paths.
+    if (hasCeiling) {
+        sky = fogColorLinear;
+    }
+
 #ifdef AURELIA_WATER_UNDERWATER
     // Submerged: the sky is seen through the water column, so background
     // pixels are the underwater atmosphere for this ray, not the air dome.
@@ -118,8 +122,6 @@ void main() {
     }
 #endif
 
-    float luma = dot(sky, vec3(0.2126, 0.7152, 0.0722));
-    sky = mix(vec3(luma), sky, 1.00);
     // BOTH paths own their RGB: the ramp is built from Iris's sky/fog colours,
     // which already carry time, biome and weather. Multiplying by the sky
     // mesh's vertex colour re-applied Minecraft's per-draw tinting a second

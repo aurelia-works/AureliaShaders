@@ -34,7 +34,9 @@ void main() {
     aureliaSceneColor = vec4(1.0);
 #else
     if (renderStage == MC_RENDER_STAGE_SUN || renderStage == MC_RENDER_STAGE_MOON) {
-        aureliaSceneColor = vec4(0.0);
+        // discard rather than write zero: independent of whatever blend state
+        // the vanilla sun (additive) and moon (alpha) draws arrive with.
+        discard;
     } else {
         // Textured sky: vanilla intent, decoded into the linear scene.
         vec4 textureColor = texture(gtexture, texcoord);

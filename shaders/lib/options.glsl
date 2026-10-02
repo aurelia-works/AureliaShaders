@@ -18,6 +18,9 @@
 // rain response, all ALU only with no texture, pass or target. Potato keeps
 // the simplest treatment; the other presets enable it explicitly. A boolean
 // option is recognised by this pack by its inline comment, so keep it.
+// Painted 2D cloud layer in the sky pass (lib/clouds2d.glsl): procedural, sky
+// pixels only, replaces the vanilla cloud slab while on. Potato keeps vanilla.
+#define AURELIA_CLOUD_LAYER // Painted cloud layer: soft lit clouds drawn in the sky pass, replaces vanilla clouds
 #define AURELIA_CLOUDS_SOFT // Soft clouds: dissolved edges, core shading, sun rim, rain response
 
 // Shadow-map allocation and distance are reload-bound Iris options. Adaptive

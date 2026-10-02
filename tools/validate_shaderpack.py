@@ -22,10 +22,10 @@ from pathlib import Path
 
 
 INCLUDE = re.compile(r'^\s*#include\s+"([^"]+)"\s*$')
-OPTION = re.compile(r"^#define\s+(AURELIA_[A-Z_]+)(?:\s+([^/\s]+))?\s*//\s*\[([^]]*)\]")
+OPTION = re.compile(r"^#define\s+(AURELIA_[A-Z0-9_]+)(?:\s+([^/\s]+))?\s*//\s*\[([^]]*)\]")
 # Boolean options may be declared on (`#define X`) or off by default
 # (`//#define X`) - Iris recognises both as togglable booleans on its menu.
-BOOLEAN_OPTION = re.compile(r"^(?://)?#define\s+(AURELIA_[A-Z_]+)\s*//")
+BOOLEAN_OPTION = re.compile(r"^(?://)?#define\s+(AURELIA_[A-Z0-9_]+)\s*//")
 PROFILE = re.compile(r"^profile\.([A-Z]+)\s*=\s*(.*)$")
 # Interpolated stage variables: `out` in a vertex stage, `in` in a fragment stage.
 _VARYING_PREFIX = r"^\s*(?:flat\s+|smooth\s+|noperspective\s+)?"
@@ -331,12 +331,12 @@ def validate_exposed_options_are_used(shaders_root: Path, options: PackOptions) 
     readable: set[str] = set()
     option_uses: set[str] = set()
     plain_tests: set[str] = set()
-    define_line = re.compile(r"^\s*#define\s+(AURELIA_[A-Z_]+)\b[^\n]*$", re.MULTILINE)
+    define_line = re.compile(r"^\s*#define\s+(AURELIA_[A-Z0-9_]+)\b[^\n]*$", re.MULTILINE)
     for source in sorted(shaders_root.glob("*.vsh")) + sorted(shaders_root.glob("*.fsh")):
         text = strip_comments(expand(source, shaders_root))
         readable.update(re.findall(r"\b([A-Za-z_]\w*)\b", text))
-        option_uses.update(re.findall(r"\b(AURELIA_[A-Z_]+)\b", define_line.sub("", text)))
-        plain_tests.update(re.findall(r"^\s*#\s*ifn?def\s+(AURELIA_[A-Z_]+)\b", text, re.MULTILINE))
+        option_uses.update(re.findall(r"\b(AURELIA_[A-Z0-9_]+)\b", define_line.sub("", text)))
+        plain_tests.update(re.findall(r"^\s*#\s*ifn?def\s+(AURELIA_[A-Z0-9_]+)\b", text, re.MULTILINE))
 
     unused = sorted(name for name in declared if name not in readable)
     if unused:
@@ -479,7 +479,7 @@ def compile_combos(
     that agree on every option a program actually reads compile identically; the
     second is skipped rather than recompiled.
     """
-    define_line = re.compile(r"^\s*#define\s+(AURELIA_[A-Z_]+)\b[^\n]*$", re.MULTILINE)
+    define_line = re.compile(r"^\s*#define\s+(AURELIA_[A-Z0-9_]+)\b[^\n]*$", re.MULTILINE)
     sources: dict[str, tuple[str, str]] = {}
     reads: dict[str, list[str]] = {}
     for program in programs:
@@ -488,7 +488,7 @@ def compile_combos(
         sources[program] = pair
         used = set()
         for text in pair:
-            used.update(re.findall(r"\b(AURELIA_[A-Z_]+)\b", define_line.sub("", strip_comments(text))))
+            used.update(re.findall(r"\b(AURELIA_[A-Z0-9_]+)\b", define_line.sub("", strip_comments(text))))
         reads[program] = sorted(used & options.names)
 
     seen: dict[tuple, str] = {}

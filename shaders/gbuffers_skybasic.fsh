@@ -5,6 +5,9 @@
 #include "/lib/color.glsl"
 #include "/lib/look.glsl"
 #include "/lib/sky.glsl"
+#ifdef AURELIA_CLOUD_LAYER
+    #include "/lib/clouds2d.glsl"
+#endif
 
 // sunPosition, not shadowLightPosition. Iris documents shadowLightPosition as
 // the *highest* celestial body, which is the moon at night, so deriving a sky
@@ -118,6 +121,12 @@ void main() {
     sky = aureliaApplySunDisc(sky, sunAlign, day, rainStrength);
     sky = aureliaApplyMoon(sky, direction, aureliaMoonDirection(), day, rainStrength);
     sky = aureliaApplyStars(sky, direction, lightDirection.y, rainStrength);
+#endif
+
+#ifdef AURELIA_CLOUD_LAYER
+    // Painted cloud layer over the finished dome and bodies (it hides the sun
+    // disc and stars behind it). Sky pixels only; see lib/clouds2d.glsl.
+    sky = aureliaApplyCloudLayer(sky, direction, aureliaSunDirection(), aureliaMoonDirection(), rainStrength);
 #endif
 
     // Nether (hasCeiling): no sun-driven atmosphere and no celestial bodies,

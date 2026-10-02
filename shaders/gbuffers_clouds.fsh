@@ -38,6 +38,13 @@ in vec3 playerPosition;
 layout(location = 0) out vec4 aureliaSceneColor;
 
 void main() {
+#ifdef AURELIA_CLOUD_LAYER
+    // The painted layer in gbuffers_skybasic replaces the vanilla slab. A
+    // fragment discard, not a vertex collapse: in game Iris's cloud path still
+    // drew the slab after an early vertex return, with unset varyings, as dark
+    // rectangles on the horizon.
+    discard;
+#endif
 #if AURELIA_DEBUG_VIEW == 5
     aureliaSceneColor = vec4(1.0);
 #else

@@ -23,14 +23,35 @@ vec3 aureliaAcesFitted(vec3 color) {
     return clamp(outputMat * (a / b), 0.0, 1.0);
 }
 
+// Look-grade constants. Everything here is a fixed, deliberately small nudge;
+// the user-facing knobs (exposure, saturation, contrast) stay identity at 1.00.
+const vec3  AURELIA_GRADE_WARM_HIGHLIGHT = vec3(1.045, 1.000, 0.935); // linear gain at white
+const vec3  AURELIA_GRADE_COOL_SHADOW    = vec3(0.0004, 0.0006, 0.0013); // linear lift at black
+const float AURELIA_GRADE_VIBRANCE       = 0.22; // extra saturation for dull colours only
+const float AURELIA_GRADE_CONTRAST_PIVOT = 0.46; // sRGB-encoded mid grey
+
+// Returns the DISPLAY-ENCODED (sRGB) graded colour, ready for the 8-bit
+// framebuffer. Contrast runs after encoding because its 0.5 pivot is only a
+// mid-grey in a perceptual space: in display-linear 0.5 is sRGB 0.735, so the
+// old pivot made contrast > 1 simply darken almost the whole image.
 vec3 aureliaGrade(vec3 color) {
     // Exposure is part of the Look Contract; 1.00 is the identity baseline.
     color = aureliaAcesFitted(max(color, 0.0) * AURELIA_EXPOSURE);
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    // Saturation about luma. Identity at 1.00; >1 can push a channel out of
+    // range, which the encode clamps.
     color = mix(vec3(luma), color, AURELIA_SKY_SATURATION);
-    // Unbound-style micro-contrast about mid-grey. Identity at 1.00.
-    color = (color - 0.5) * AURELIA_CONTRAST + 0.5;
-    // Grey axis stays neutral: no split-toning. Complementary-style reference
-    // keeps whites/greys on-axis and gets warmth only from light colors.
-    return clamp(color, 0.0, 1.0);
+    // Vibrance: lift weakly-saturated colours more than strong ones, so the
+    // muted haze and foliage of the scene gains richness without neon greens.
+    float chroma = max(color.r, max(color.g, color.b)) - min(color.r, min(color.g, color.b));
+    color = mix(vec3(luma), color, 1.0 + AURELIA_GRADE_VIBRANCE * (1.0 - clamp(chroma * 2.0, 0.0, 1.0)));
+    // Gentle split tone: warm gain that only reaches the highlights, and a
+    // cool lift that only reaches the shadows. Mid-greys stay near neutral.
+    float hi = luma * luma;
+    float lo = 1.0 - smoothstep(0.0, 0.25, luma);
+    color = color * mix(vec3(1.0), AURELIA_GRADE_WARM_HIGHLIGHT, hi)
+          + AURELIA_GRADE_COOL_SHADOW * lo;
+    vec3 display = aureliaLinearToSrgb(color);
+    return clamp((display - AURELIA_GRADE_CONTRAST_PIVOT) * AURELIA_CONTRAST
+                 + AURELIA_GRADE_CONTRAST_PIVOT, 0.0, 1.0);
 }

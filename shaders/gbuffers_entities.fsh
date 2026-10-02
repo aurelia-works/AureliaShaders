@@ -28,12 +28,12 @@ void main() {
     // Preserve Minecraft's hurt/team overlay without an extra material path.
     // entityColor is another Minecraft sRGB color input; its alpha is a
     // coverage/overlay weight and remains linear.
-    color = mix(color, aureliaSrgbToLinear(entityColor.rgb), entityColor.a * 0.35);
+    color = mix(color, aureliaSrgbToLinear(entityColor.rgb), entityColor.a * 0.60);
 
 #if AURELIA_DEBUG_VIEW == 1
     color = aureliaDebugLighting(worldNormal, lmcoord);
 #elif AURELIA_DEBUG_VIEW == 5
-    color = vec3(aureliaShadowVisibility(playerPosition, worldNormal, aureliaShadowDirection(), aureliaSunVisibility(), rainStrength));
+    color = vec3(aureliaShadowDebug(playerPosition, worldNormal));
 #endif
     aureliaSceneColor = vec4(color, albedo.a);
 }

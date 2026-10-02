@@ -20,18 +20,51 @@ vec3 aureliaShadowDirection() {
     return normalize(mat3(gbufferModelViewInverse) * shadowLightPosition);
 }
 
+// Sun and moon shadow factors, (sun, moon), each 1.0 where unshadowed or where
+// that body is not the one the shadow camera is rendering.
+//
+// Iris points the shadow camera at the highest celestial body and flips from the
+// sun to the moon when the sun crosses the horizon, while sunUp (the contract's
+// daylight fade) is still ~0.58 there. Treating the map as the sun's during that
+// stretch shadows twilight light with the moon's depths. So each body only reads
+// the map while the camera actually points at it (dot test on directions that
+// agree to ~1.0 or disagree to ~-1.0), and the weight ramps in over the first few
+// degrees above the horizon so the hand-over never pops. The moon uses the same
+// single lookup the sun does, so the night costs no more than the day.
+vec2 aureliaShadowTerms(vec3 playerPosition, vec3 normal, float skyLight) {
+    vec2 terms = vec2(1.0);
+#ifdef AURELIA_SHADOWS
+    vec3 shadowDir = aureliaShadowDirection();
+    vec3 sunDir = aureliaSunDirection();
+    vec3 moonDir = aureliaMoonDirection();
+    float sunMap = step(0.5, dot(shadowDir, sunDir)) * smoothstep(0.0, 0.05, sunDir.y);
+    float moonMap = step(0.5, dot(shadowDir, moonDir)) * smoothstep(0.0, 0.06, moonDir.y);
+    // Both gates are uniform per frame except skyLight; the tap is a
+    // derivative-free textureLod so skipping it underground is well defined.
+    if (skyLight > 0.002 && sunMap + moonMap > 0.0) {
+        float visibility = aureliaShadowReceive(playerPosition, normal, shadowDir, rainStrength);
+        terms = vec2(mix(1.0, visibility, sunMap), mix(1.0, visibility, moonMap));
+    }
+#endif
+    return terms;
+}
+
+// Debug-view helper: the combined shadow factor for a fully sky-lit pixel.
+float aureliaShadowDebug(vec3 playerPosition, vec3 worldNormal) {
+    vec2 terms = aureliaShadowTerms(playerPosition, normalize(worldNormal), 1.0);
+    return terms.x * terms.y;
+}
+
 vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 playerPosition) {
     vec3 lightDir = aureliaSunDirection();
-    vec3 shadowDir = aureliaShadowDirection();
     float sunUp = aureliaSunVisibility();
     // Lightmap coordinates are perceptual samples, not linear irradiance.
     // Recover a little mid-range energy before applying the analytical model;
     // this avoids the Phase 1 underexposure on ordinary outdoor blocks.
     float skyLight = pow(clamp(lightLevel.y, 0.0, 1.0), 0.72);
     float blockLight = pow(clamp(lightLevel.x, 0.0, 1.0), 0.80);
-    // worldNormal already arrives normalized, so spend the one normalize() here
-    // and let the optional terms below reuse this local instead of paying for a
-    // second one. The direct-light expression is unchanged by the hoist.
+    // One normalize() for the interpolated normal; the shadow receiver and the
+    // optional terms below all reuse this local.
     vec3 normal = normalize(worldNormal);
     float ndl = max(dot(normal, lightDir), 0.0);
 
@@ -58,7 +91,8 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
         * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight * dayFill
            * (1.0 + 0.08 * rainStrength))
         + vec3(0.055, 0.057, 0.063);
-    float shadow = aureliaShadowVisibility(playerPosition, worldNormal, shadowDir, sunUp, rainStrength);
+    vec2 shadowTerms = aureliaShadowTerms(playerPosition, normal, skyLight);
+    float shadow = shadowTerms.x;
     vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * shadow);
     vec3 torch = vec3(1.00, 0.66, 0.38) * (blockLight * blockLight * 1.10);
     // Rain suppresses direct sun contrast and saturation of the accumulated
@@ -74,7 +108,7 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     float moonUp = smoothstep(-0.05, 0.05, aureliaMoonDirection().y);
     float moonNdl = max(dot(normal, aureliaMoonDirection()), 0.0);
     vec3 moonlight = vec3(0.20, 0.23, 0.30)
-        * ((1.0 - sunUp) * moonUp * skyLight * moonNdl * (1.0 - 0.5 * rainStrength));
+        * ((1.0 - sunUp) * moonUp * skyLight * moonNdl * shadowTerms.y * (1.0 - 0.5 * rainStrength));
 
     // Optional per-pixel terms, both ALU only: no sampler, uniform, render
     // target, or pass. With both options undefined the additions below vanish
@@ -116,7 +150,8 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
     // Rain sheen: one Blinn lobe on the existing sun/view pair. smoothstep is
     // exactly zero at rainStrength 0.05 and below, and the branch is uniform
     // per frame, so dry weather pays nothing and stays bit-identical. The ndl
-    // mask keeps the sheen on faces the directional light actually reaches; it
+    // mask keeps the sheen on faces the directional light actually reaches, and the
+    // shadow factor keeps it out of shade (a sheen needs the sun); it
     // is a surface reflection, so it is added after the albedo product.
     float wetness = smoothstep(0.05, 0.70, rainStrength);
     if (wetness > 0.0) {
@@ -127,7 +162,7 @@ vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 pl
         lobe *= lobe;
         lobe *= lobe;
         color += vec3(0.70, 0.78, 0.92)
-            * (wetness * sunUp * skyLight * ndl * lobe * 0.50);
+            * (wetness * sunUp * skyLight * ndl * shadow * lobe * 0.50);
     }
 #endif
 

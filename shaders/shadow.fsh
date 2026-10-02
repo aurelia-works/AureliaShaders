@@ -17,7 +17,6 @@ const float shadowDistanceRenderMul = 1.0;
 const bool shadowHardwareFiltering0 = true;
 
 in vec2 texcoord;
-in vec4 vertexColor;
 
 void main() {
     // Keep leaves, grass, cutout entities, and terrain silhouettes correct in

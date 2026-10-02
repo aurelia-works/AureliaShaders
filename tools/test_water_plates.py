@@ -41,7 +41,6 @@ the NEEDS-IN-GAME checklist in the report.
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 import numpy as np

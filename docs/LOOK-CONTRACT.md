@@ -35,7 +35,6 @@ byte-identical — see the P3.0B report). Tuning begins in P3.1.
 | `moonDirection` | `aureliaMoonDirection()` | `normalize(mat3(gbufferModelViewInverse) * moonPosition)` | final; the night disc comes from `moonPosition`, never the shadow source |
 | `sunHeight` | `aureliaSunHeight()` | `aureliaSunDirection().y` | final |
 | `sunUp` | `aureliaSunVisibility()` | `smoothstep(-0.10, 0.08, sunHeight)` | final |
-| `nightFactor` | `aureliaNightFactor()` | `1 - smoothstep(-0.15, 0.05, sunHeight)` | defined; still unconsumed (the atmosphere drives dusk from `horizonFactor`); reserved for a later phase |
 | horizon factor | `aureliaHorizonFactor(height)` | `1 - smoothstep(0.05, 0.48, max(height,0))` | final; band widened in P4 so dawn/golden hour (up to ~28° sun elevation) keep warmth |
 | `sunColor` | `aureliaSunColor(height)` | `mix(noon(1.00,0.97,0.91), sunset(1.00,0.57,0.31), horizonFactor)` | final |
 | ambient tint | `aureliaAmbientTint(skyLight)` | `mix(neutral(0.50), sky(0.43,0.50,0.62), 0.18 + 0.08*skyLight)` | final |
@@ -44,7 +43,7 @@ byte-identical — see the P3.0B report). Tuning begins in P3.1.
 | `horizonColor` | `aureliaHorizonColor(fogColorLinear)` | identity — the linear form of `fogColor`, the fog's far-distance limit | final |
 | fog curve | `aureliaFogFactor(dist, density, rain)` | see below | final |
 | weather attenuation | constants below | linear coefficients on `rainStrength` | final |
-| exposure | `AURELIA_EXPOSURE` option; contract baseline `AURELIA_EXPOSURE_BASELINE` | pre-tonemap multiply; baseline `1.00` | applied in `tonemap.glsl` from P3.2 |
+| exposure | `AURELIA_EXPOSURE` option (identity at `1.00`) | pre-tonemap multiply, applied in `tonemap.glsl` | final |
 
 ### Fog curve
 
@@ -94,9 +93,9 @@ here. Values not finalised until P3.1 are labelled **provisional**.
 
 | # | Conditions | Assertions |
 | --- | --- | --- |
-| V1 | Overworld clear noon | `sunHeight ≈ 1`, `sunUp = 1`, `nightFactor = 0`, `sunColor ≈ noon`, `aureliaFogFactor(64,…)` as specified |
+| V1 | Overworld clear noon | `sunHeight ≈ 1`, `sunUp = 1`, `sunColor ≈ noon`, `aureliaFogFactor(64,…)` as specified |
 | V2 | Overworld clear, sun near horizon | `horizonFactor` near 1, `sunColor ≈ sunset`, fog(64) as specified |
-| V3 | Overworld clear midnight | `sunUp = 0`, `nightFactor = 1`, night palette from the P3.1 atmosphere (still a tuning surface) |
+| V3 | Overworld clear midnight | `sunUp = 0`, night palette from the P3.1 atmosphere (still a tuning surface) |
 | V4 | Overworld noon, `rainStrength = 1` | all four weather coefficients applied as specified |
 | V5 | Nether / End | dimension palette selection — **provisional**; scope is fixed in P3.1, not v1 |
 

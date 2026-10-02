@@ -27,16 +27,11 @@ frame's `frameTime`: degradation responds over 8 ticks; recovery responds over
 at 0.70 through 38-50 FPS, ramps down to 0.20 between 38-30 FPS, and reaches
 0.0 below 30 FPS.
 
-The controller is real but Phase 1 deliberately consumes it only in the debug
-view. Runtime adjustment must wait for runtime-safe secondary workloads, such
-as cloud ray steps, reflection taps, fog samples, and shadow filter taps.
+The controller's only runtime consumer is the shadow filter budget (Phase 2A);
+the debug view shows the raw signal. Further consumers must be runtime-safe
+secondary workloads, such as cloud ray steps, reflection taps, or fog samples.
 Shadow-map resolution is a compile-time resource allocation and will remain a
 preset/reload setting in Phase 2 rather than being falsely changed per frame.
 
-## Phase 2 boundary
-
-Add optional shadow maps first, with a fixed resolution per profile and a
-runtime-adjustable filter budget. Then add water, a single low-resolution cloud
-path, and atmospheric samples one at a time, connecting each safe per-frame
-budget to `aureliaAdaptiveQuality`. Capture frame-time percentiles and GPU load
-after each feature before raising quality defaults.
+This file records the Phase 1 baseline; shadows, water, sky and clouds landed
+afterwards (see `README.md` for the current pipeline).

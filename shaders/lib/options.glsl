@@ -8,9 +8,9 @@
 #define AURELIA_NIGHT_LIFT 0.16 // [0.08 0.12 0.16 0.20 0.22] Playable night ambient floor
 #define AURELIA_DEBUG_VIEW 0 // [0 1 2 3 4 5 6] Debug output mode
 
-// Phase 3 atmosphere/sky treatment. Boolean so it is revertible from the Iris
-// options screen without a code edit; Potato disables it, the other presets
-// enable it explicitly. Consumed by gbuffers_skybasic from P3.1 on.
+// Atmosphere/sky treatment. Boolean so it is revertible from the Iris options
+// screen without a code edit; Potato disables it, the other presets enable it
+// explicitly. Consumed by gbuffers_skybasic and lib/sky.glsl.
 #define AURELIA_ATMOSPHERE // Analytic sky gradient, sun/moon glow and weather response
 
 // Soft cloud treatment (P4): analytic character on the vanilla cloud slab -
@@ -28,8 +28,14 @@
 #define AURELIA_SHADOW_STRENGTH 0.82 // [0.70 0.82 0.90] Direct-light shadow strength
 #define AURELIA_SHADOWS // Optional directional shadow map
 
-#define AURELIA_ADAPTIVE // Smooth frame-time controller for future secondary effects
+#define AURELIA_ADAPTIVE // Smooth frame-time controller (master switch for adaptive shadow filtering)
 #define AURELIA_SHADOW_ADAPTIVE // Runtime PCF budget only; no shadow-map reallocations
+// The controller's only runtime consumer is the PCF budget, so AURELIA_ADAPTIVE
+// off means a fixed filter. (Iris lists options from the #define lines above;
+// this #undef is invisible to it and only applies after the values are set.)
+#if !defined(AURELIA_ADAPTIVE) && defined(AURELIA_SHADOW_ADAPTIVE)
+    #undef AURELIA_SHADOW_ADAPTIVE
+#endif
 
 // Analytic water surface: wave-perturbed normal, Fresnel, sky reflection and a
 // sun glint. Behind a boolean so it is revertible from the Iris options screen
@@ -83,10 +89,3 @@
 // lists it as an unchecked boolean.
 //#define AURELIA_DISTANT_RAIN // EXPERIMENTAL: procedural distant-rain curtain
 #define AURELIA_DISTANT_RAIN_LAYERS 2 // [1 2] EXPERIMENTAL: curtain layers (only when the curtain is on)
-
-// Keep an explicit test in source so Iris exposes this boolean option.
-#ifdef AURELIA_ADAPTIVE
-    #define AURELIA_ADAPTIVE_ENABLED 1
-#else
-    #define AURELIA_ADAPTIVE_ENABLED 0
-#endif

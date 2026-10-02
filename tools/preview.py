@@ -14,7 +14,6 @@ prove.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 import time
 from pathlib import Path
@@ -26,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from preview_glsl import ProfileError, parse_profile  # noqa: E402
 from preview_render import Camera, PreviewRenderer, Sky  # noqa: E402
-from preview_scene import SEA_LEVEL, load_scene  # noqa: E402
+from preview_scene import load_scene  # noqa: E402
 
 PROFILES = ("POTATO", "LOW", "BALANCED", "CINEMATIC", "ADAPTIVE")
 
@@ -35,37 +34,12 @@ def presets(shaders_root: Path, profile: str) -> tuple[dict[str, str], set[str]]
     """Numeric overrides plus the boolean options a preset switches off.
 
     ``parse_profile`` returns the booleans a preset enables; the complementary
-    set of known booleans is what it disables.
+    set of the boolean options Iris exposes for the pack is what it disables.
     """
-    from validate_shaderpack import BOOLEAN_OPTION
+    from validate_shaderpack import read_options
 
     overrides, enabled = parse_profile(shaders_root, profile)
-    known = _known_booleans(shaders_root)
-    return overrides, known - enabled
-
-
-def _known_booleans(shaders_root: Path) -> set[str]:
-    """The boolean options Iris actually exposes for this pack.
-
-    Derived by set difference: every ``AURELIA_*`` name the pack mentions in
-    ``shaders.properties``, minus the ones ``lib/options.glsl`` gives a value.
-    Scanning the define lines directly instead would pick up internal derived
-    macros such as ``AURELIA_ADAPTIVE_ENABLED``, which is defined twice inside
-    an ``#ifdef`` and must never be undefined on its own.
-    """
-    from validate_shaderpack import OPTION
-
-    value_options = {
-        match.group(1)
-        for match in (
-            OPTION.match(line)
-            for line in (shaders_root / "lib/options.glsl").read_text(encoding="utf-8").splitlines()
-        )
-        if match
-    }
-    properties = (shaders_root / "shaders.properties").read_text(encoding="utf-8")
-    mentioned = set(re.findall(r"\bAURELIA_[A-Z_]+\b", properties))
-    return mentioned - value_options
+    return overrides, set(read_options(shaders_root).booleans) - enabled
 
 
 def camera_for(name: str) -> Camera:

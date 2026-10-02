@@ -41,13 +41,17 @@ value.AURELIA_DEBUG_VIEW.4=Raw shadow map
 value.AURELIA_DEBUG_VIEW.5=Shadow factor
 value.AURELIA_DEBUG_VIEW.6=Adaptive shadow quality
 
-option.AURELIA_ADAPTIVE.comment=Smooths prior-frame time with slow recovery. Adaptive currently drives only safe secondary budgets such as shadow filtering.
+value.AURELIA_SHADOW_FILTER_MAX.1=Fast
+value.AURELIA_SHADOW_FILTER_MAX.2=Standard
+value.AURELIA_SHADOW_FILTER_MAX.3=Soft
+
+option.AURELIA_ADAPTIVE.comment=Smooths prior-frame time with slow recovery. Master switch for Adaptive shadow filtering, its only consumer; off means a fixed shadow filter.
 option.AURELIA_SHADOWS.comment=Reload-bound. Potato disables the map completely.
 option.AURELIA_SHADOW_RESOLUTION.comment=Reload-bound square depth allocation. Adaptive keeps this allocation fixed.
 option.AURELIA_SHADOW_DISTANCE.comment=Reload-bound caster and receiver coverage distance in blocks.
-option.AURELIA_SHADOW_FILTER_MAX.comment=One tap is hard/cheap, two is four-tap PCF, three permits nine-tap PCF.
+option.AURELIA_SHADOW_FILTER_MAX.comment=Shadow-map reads use hardware-compared filtering. 1 and 2 take one filtered read; 3 takes four (a softer tent), or one while Adaptive shadow filtering is short of frame-time headroom.
 option.AURELIA_SHADOW_STRENGTH.comment=Only attenuates direct sunlight; cool ambient and block light stay visible.
-option.AURELIA_SHADOW_ADAPTIVE.comment=Adaptive profile only. Uses the smoothed frame-time signal to choose 1, 4, or 9 receiver samples without resizing the map.
+option.AURELIA_SHADOW_ADAPTIVE.comment=Adaptive profile only. Only matters at Maximum shadow filter 3. Uses the smoothed frame-time signal to choose between one and four filtered reads without resizing the map.
 option.AURELIA_WATER_SURFACE.comment=Analytic water: wave-perturbed normal, Fresnel, sky reflection and a sun glint. No extra texture and no extra render target. Potato disables it; turning it off restores the plain gbuffers_terrain appearance of water.
 option.AURELIA_WATER_ANIMATED.comment=Two travelling analytic waves move the water normal with time so the surface breathes instead of sitting still. ALU only, no texture or render target; Potato and Low disable it.
 option.AURELIA_WATER_DEPTH.comment=One depthtex1 read (the pre-translucent opaque depth) gives the water column thickness: shallow water reads clearer, deep water settles to the accepted blue palette. One depth fetch and a few ALU ops; only the water body colour changes, so Fresnel, reflection and glint are unaffected. Potato and Low disable it.
@@ -57,9 +61,9 @@ option.AURELIA_ATMOSPHERE.comment=Analytic atmosphere: a directional sky gradien
 option.AURELIA_CLOUDS_SOFT.comment=Dissolved cloud edges, denser-core shading, a warm sun-side rim at low sun and a darker desaturated rain response, all ALU only on the vanilla cloud slab. Potato keeps the simplest treatment.
 option.AURELIA_EXPOSURE.comment=Scene exposure applied before the filmic curve. 1.00 is the neutral baseline; higher values brighten the whole image.
 option.AURELIA_CONTRAST.comment=Micro-contrast applied about mid-grey after the filmic curve. 1.00 is the neutral baseline; higher values deepen shadows and lift highlights.
-option.AURELIA_DEBUG_VIEW.comment=Lighting shows normal and lightmap data. Frame pacing shows red pressure, green quality, blue reference. Raw shadow map displays depth. Shadow factor displays applied direct-light visibility. Adaptive shadow quality: red=1, amber=4, green=9 taps.
+option.AURELIA_DEBUG_VIEW.comment=Lighting shows normal and lightmap data. Frame pacing shows red pressure, green quality, blue reference. Raw shadow map displays depth. Shadow factor displays applied direct-light visibility. Adaptive shadow quality: red, amber, green are the low, middle and top adaptive tiers; only the top tier takes four reads (at Maximum shadow filter 3).
 option.AURELIA_DISTANT_RAIN.comment=EXPERIMENTAL, off in every preset: adds a procedural two-layer distant-rain curtain on the final pass. Native Minecraft weather already surrounds the player, so this stays an experiment for manual testing only.
 option.AURELIA_DISTANT_RAIN_LAYERS.comment=EXPERIMENTAL: number of curtain layers when the distant-rain curtain is enabled. 1 is cheapest, 2 is the tuned default.
 option.AURELIA_FOLIAGE_TRANSLUCENCY.comment=Wrapped transmission for thin geometry: leaves and grass facing away from the sun pick up a little sunlight when you look sunward, instead of going black. Costs a few ALU ops and no texture read; it does not touch the shadow term.
 option.AURELIA_WETNESS_SPECULAR.comment=A small Blinn highlight that fades in with rain strength and is off in dry weather, so rain reads as wet surfaces. ALU only, no extra texture or render target.
-profile.comment=Potato disables shadows. Low uses one depth comparison. Balanced targets the M1 Air with 1024 depth and four-tap PCF. Cinematic caps allocation at 1536 and uses nine taps. Adaptive keeps 1024 fixed and changes only receiver taps.
+profile.comment=Potato disables shadows, sky treatment, water effects and soft clouds. Low is a 512 map at 64 blocks with the water surface only. Balanced targets the M1 Air with a 1024 map at 96 blocks and every water effect. Cinematic uses a 1536 map at 128 blocks with the four-read shadow filter. Adaptive keeps a 1024 map fixed and changes only the shadow filter budget.

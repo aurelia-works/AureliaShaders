@@ -34,24 +34,39 @@ const float AURELIA_GRADE_CONTRAST_PIVOT = 0.46; // sRGB-encoded mid grey
 // framebuffer. Contrast runs after encoding because its 0.5 pivot is only a
 // mid-grey in a perceptual space: in display-linear 0.5 is sRGB 0.735, so the
 // old pivot made contrast > 1 simply darken almost the whole image.
+// Phase 5 film response. A per-channel sigmoid in log2 exposure, the idea
+// behind AgX: compress each channel over a fixed window of stops around mid
+// grey, in a slightly desaturated ("inset") space so a very bright saturated
+// light rolls to white along its own hue instead of clipping to a primary,
+// then hand back part of the saturation ("outset"). The window is 10 stops
+// under and 6.5 over 18% grey; the curve's mid point puts 18% at sRGB 0.46
+// (display mid grey) and matches sRGB through the shadows, then gives five
+// stops of shoulder above it. Output is display-encoded.
+const float AURELIA_FILM_MIN_EV = -10.0;
+const float AURELIA_FILM_MAX_EV = 6.5;
+const float AURELIA_FILM_SLOPE  = 8.0;
+const float AURELIA_FILM_CENTER = 0.6365;
+const float AURELIA_FILM_FLOOR  = 0.0061082;   // the sigmoid at t = 0
+const float AURELIA_FILM_SCALE  = 1.0614220;   // 1 / (sigmoid(1) - sigmoid(0))
+const float AURELIA_FILM_INSET  = 0.14;
+const float AURELIA_FILM_OUTSET = 1.12;
+
+vec3 aureliaFilm(vec3 color) {
+    const vec3 luma = vec3(0.2126, 0.7152, 0.0722);
+    color = max(color, 0.0);
+    color = mix(color, vec3(dot(color, luma)), AURELIA_FILM_INSET);
+    vec3 t = (log2(max(color, 1e-10) / 0.18) - AURELIA_FILM_MIN_EV) / (AURELIA_FILM_MAX_EV - AURELIA_FILM_MIN_EV);
+    t = clamp(t, 0.0, 1.0);
+    vec3 display = (1.0 / (1.0 + exp(-AURELIA_FILM_SLOPE * (t - AURELIA_FILM_CENTER))) - AURELIA_FILM_FLOOR)
+                 * AURELIA_FILM_SCALE;
+    float mean = dot(display, luma);
+    return clamp(mean + (display - mean) * AURELIA_FILM_OUTSET, 0.0, 1.0);
+}
+
 vec3 aureliaGrade(vec3 color) {
-    // Exposure is part of the Look Contract; 1.00 is the identity baseline.
-    color = aureliaAcesFitted(max(color, 0.0) * AURELIA_EXPOSURE);
-    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    // Saturation about luma. Identity at 1.00; >1 can push a channel out of
-    // range, which the encode clamps.
-    color = mix(vec3(luma), color, AURELIA_SKY_SATURATION);
-    // Vibrance: lift weakly-saturated colours more than strong ones, so the
-    // muted haze and foliage of the scene gains richness without neon greens.
-    float chroma = max(color.r, max(color.g, color.b)) - min(color.r, min(color.g, color.b));
-    color = mix(vec3(luma), color, 1.0 + AURELIA_GRADE_VIBRANCE * (1.0 - clamp(chroma * 2.0, 0.0, 1.0)));
-    // Gentle split tone: warm gain that only reaches the highlights, and a
-    // cool lift that only reaches the shadows. Mid-greys stay near neutral.
-    float hi = luma * luma;
-    float lo = 1.0 - smoothstep(0.0, 0.25, luma);
-    color = color * mix(vec3(1.0), AURELIA_GRADE_WARM_HIGHLIGHT, hi)
-          + AURELIA_GRADE_COOL_SHADOW * lo;
-    vec3 display = aureliaLinearToSrgb(color);
+    vec3 display = aureliaFilm(color * AURELIA_EXPOSURE);
+    float luma = dot(display, vec3(0.2126, 0.7152, 0.0722));
+    display = mix(vec3(luma), display, AURELIA_SKY_SATURATION);
     return clamp((display - AURELIA_GRADE_CONTRAST_PIVOT) * AURELIA_CONTRAST
                  + AURELIA_GRADE_CONTRAST_PIVOT, 0.0, 1.0);
 }

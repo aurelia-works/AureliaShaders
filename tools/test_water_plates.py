@@ -2,40 +2,33 @@
 """Regression test for V1-WATER: block-stepped above-water colour plates.
 
 Live defect (in-game screenshots 2026-09-29_09.57.11/.25, ADAPTIVE profile):
-overhead river water shows pale rectangular plates aligned to block columns.
+overhead river water showed PALE rectangular plates aligned to block columns.
+Minecraft bathymetry is voxel-stepped, so the water column thickness
+reconstructed from ``depthtex1`` jumps by whole blocks at voxel walls, and the
+old palette mapped that stepped signal through a near-white SHALLOW colour and
+a shoreline alpha that ran to zero. Thin columns came out paler than both the
+bed and the deeper water beside them.
 
-Root-cause model: Minecraft bathymetry is voxel-stepped, so the water column
-thickness ``t`` reconstructed from ``depthtex1`` (the pre-translucent opaque
-copy) jumps by whole blocks at voxel
-walls. Overhead, Fresnel is ~0.02, so the pixel is the depth-driven body colour
-composited over the floor at the depth-driven alpha. Two high-contrast mappings
-of that stepped signal produced the plates:
+Phase 5 replaced the palette with a participating medium (lib/water.glsl,
+gbuffers_water.fsh): the bed is read from the opaque scene and attenuated per
+channel by Beer-Lambert over the view path plus the bed's depth, and the
+column adds its own in-scatter. A stepped bed still shows steps, as a real
+stepped bed would, but the defect's signature cannot return as long as the
+composite keeps these properties, which this test checks with the shipped
+constants over a voxel-stepped transect and a set of bed colours:
 
-1. the body curve ran from near-white SHALLOW (0.97, 0.98, 1.00) to MID blue,
-2. the shoreline alpha ran to exactly 0 at the waterline (``alpha *= shoreFade``),
-   so neighbouring 1-block columns alternated between "no water, see floor"
-   and "full water".
+* never paler: no column is brighter than the brighter of the bare bed and
+  infinitely deep water (the old plates were brighter than both);
+* monotonic: luminance moves from the bed toward deep water as the column
+  thickens, with no reversal;
+* convex: each extra block changes the colour less than the one before
+  (Beer-Lambert), so the shallowest step is the largest and bounded;
+* readable: a one-block column still shows most of the bed;
+* graded: ten blocks of water read clearly deeper than one.
 
-Per-vertex biome tint steps are NOT excluded as a secondary contributor: the
-screenshots alone cannot separate tint from bathymetry, and this test covers
-only the depth/body/alpha path. At grazing angles the radial thickness used
-in-shader overstates the true column (slant); the grazing case below is
-representative, not exact.
-
-The offline GL harness cannot produce voxel steps: its water is one flat plane
-over a smooth heightfield, so thickness varies continuously and no plate ever
-forms (that is why an earlier preview wrongly claimed "no artifacts"). This
-test is the representative block-stepped case instead: it evaluates the
-*shipped GLSL arithmetic* -- numeric constants parsed from
-``shaders/lib/water.glsl`` and ``shaders/gbuffers_water.fsh``, failing loudly
-if the parsed shape changes -- over a voxel-stepped shoreline transect and a
-floor/lighting sensitivity grid, and bounds the per-step composite jump.
-
-What this proves: the depth/body/shore curve's per-block step-contrast is
-reduced ~2-3x across the grid. It does NOT prove plates are visually absent:
-the 0.15 bound is an engineering margin, not a calibrated JND, and live Iris
-depthtex1 copy timing, real bathymetry/biome tint, and the final in-game look need
-the NEEDS-IN-GAME checklist in the report.
+Overhead only (Fresnel 0.02, no fog), in reflectance units: radiance divided
+by the downwelling irradiance over pi, so the bed is its albedo. What this
+does NOT prove: live depthtex1 timing, biome tint steps, and the in-game look.
 """
 
 from __future__ import annotations
@@ -49,168 +42,113 @@ ROOT = Path(__file__).resolve().parents[1]
 WATER_GLSL = ROOT / "shaders" / "lib" / "water.glsl"
 WATER_FSH = ROOT / "shaders" / "gbuffers_water.fsh"
 
-# 1-block voxel steps across a shoreline: thin columns alternate with
-# one-block-deeper neighbours, then the floor falls away block by block.
-TRANSECT = (0.15, 1.15, 0.15, 1.15, 2.15, 3.15, 4.15)
+# Still water stands 14/16 of a block above its bed block's top, so overhead
+# columns are 0.875, 1.875, ... deep; thin and deep neighbours alternate first.
+TRANSECT = (0.875, 1.875, 0.875, 1.875, 2.875, 3.875, 4.875)
+DEPTHS = np.array((0.875, 1.875, 2.875, 3.875, 4.875, 6.875, 9.875))
 
-BASE_ALPHA = 0.72  # translucent water albedo alpha, as in the preview atlas
-
-# Floor/lighting sensitivity grid: lit floor colour x forward-lit water colour.
-# Covers sunlit sand, the bright-sand/shadowed-water corner that broke the
-# first candidate (alpha floor 0.60 stepped 0.171 there), and dark rock.
-CASES = {
-    "sand_sunlit": (np.array([0.55, 0.48, 0.34]), np.array([0.30, 0.38, 0.55])),
-    "brightSand_shadowed": (np.array([0.65, 0.60, 0.50]), np.array([0.20, 0.25, 0.35])),
-    "brightSand_sunlit": (np.array([0.65, 0.60, 0.50]), np.array([0.30, 0.38, 0.55])),
-    "darkRock_shadowed": (np.array([0.25, 0.24, 0.26]), np.array([0.20, 0.25, 0.35])),
+BEDS = {
+    "sand": np.array([0.55, 0.48, 0.34]),
+    "bright_sand": np.array([0.65, 0.60, 0.50]),
+    "gravel": np.array([0.35, 0.33, 0.32]),
+    "dark_rock": np.array([0.25, 0.24, 0.26]),
 }
+LUMA = np.array([0.2126, 0.7152, 0.0722])
+F0 = 0.02  # overhead Fresnel
 
-# Representative grazing case: view-cosine 0.3 gives Schlick ~0.18 and a
-# ~0.09 reflection weight, so the body plate signal shrinks ~9% while sky
-# reflection dominates. Slant-thickening of the true column is NOT modelled.
-GRAZING_REFLECTION = np.array([0.35, 0.50, 0.75])
-GRAZING_BODY_KEEP = 0.91
-
-MAX_PLATE_STEP = 0.15  # adjacent-column composite jump (linear euclidean)
-MAX_SHALLOW_FLOOR_DIST = 0.45  # shallow water must keep the floor readable
-MIN_DEPTH_SEPARATION = 0.06  # deep water must still read deeper than shallow
-# Thickness at which the depth grading is judged: fully on the MID->DEEP limb.
-DEEP_REFERENCE_T = 10.0
+# Largest 1-block jump (linear euclidean, reflectance). With the shipped
+# coefficients a bright sand bed steps 0.211 from 0.875 to 1.875 blocks, red
+# going first; the bound guards against sharper coefficients, not physics.
+MAX_FIRST_STEP = 0.25
+MIN_SHALLOW_SEEN = 0.55       # luminance share of the bed seen through 0.875 blocks
+MIN_DEPTH_SEPARATION = 0.06   # 0.875 vs 9.875 blocks, luminance
+PALE_EPS = 1e-6
 
 
 def _vec3(source: str, name: str) -> np.ndarray:
     match = re.search(
-        rf"const\s+vec3\s+{re.escape(name)}\s*=\s*vec3\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)",
-        source,
-    )
+        rf"const\s+vec3\s+{re.escape(name)}\s*=\s*vec3\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)", source)
     if not match:
         raise AssertionError(f"could not parse {name} from water.glsl; update the test, not the parse")
-    return np.array([float(match.group(1)), float(match.group(2)), float(match.group(3))])
+    return np.array([float(g) for g in match.groups()])
 
 
 def _float(source: str, name: str) -> float:
-    match = re.search(
-        rf"const\s+float\s+{re.escape(name)}\s*=\s*([\d.]+)\s*;",
-        source,
-    )
+    match = re.search(rf"const\s+float\s+{re.escape(name)}\s*=\s*([\d.]+)\s*;", source)
     if not match:
         raise AssertionError(f"could not parse {name} from water.glsl; update the test, not the parse")
     return float(match.group(1))
 
 
-def _shore_params(fsh: str) -> tuple[float, float, float]:
-    """Return ``(edge0, edge1, alpha_floor)`` of the shoreline fade.
-
-    Accepts the accepted ``alpha *= shoreFade;`` form (floor 0) and the
-    softened ``alpha *= mix(FLOOR, 1.0, shoreFade);`` form. Anything else is a
-    loud failure, not a silent pass.
-    """
-    fade = re.search(
-        r"float\s+aureliaWaterShoreFade\s*\(\s*float\s+\w+\s*\)\s*\{\s*"
-        r"return\s+smoothstep\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,",
-        (WATER_GLSL.read_text(encoding="utf-8")),
-    )
-    if not fade:
-        raise AssertionError("could not parse aureliaWaterShoreFade; update the test, not the parse")
-    edge0, edge1 = float(fade.group(1)), float(fade.group(2))
-    softened = re.search(
-        r"alpha\s*\*=\s*mix\(\s*([\d.]+)\s*,\s*1\.0\s*,\s*shoreFade\s*\)\s*;", fsh
-    )
-    if softened:
-        return edge0, edge1, float(softened.group(1))
-    if re.search(r"alpha\s*\*=\s*shoreFade\s*;", fsh):
-        return edge0, edge1, 0.0
-    raise AssertionError(
-        "unrecognised shoreline alpha form in gbuffers_water.fsh; update the test, not the parse"
-    )
+def _check_shape(fsh: str, water: str) -> None:
+    """Fail loudly if the shipped composite is no longer what this models."""
+    code = re.sub(r"//[^\n]*", "", fsh)
+    needed = {
+        "Beer-Lambert over the view path plus the bed depth":
+            r"exp\(\s*-extinction\s*\*\s*\(\s*thickness\s*\+\s*bedDepth\s*\)\s*\)",
+        "bed depth from the view ray": r"bedDepth\s*=\s*thickness\s*\*\s*abs\(\s*eyeToFragment\.y\s*\)",
+        "bed seen through the column": r"seen\s*=\s*\(\s*1\.0\s*-\s*fresnel\s*\)\s*\*\s*transmittance",
+        "refracted composite": r"bed\s*\*\s*seen\s*\+\s*surface\s*\*\s*fog\.a",
+        "column in-scatter": r"aureliaWaterInscatter\(\s*downwelling\s*,\s*extinction\s*,\s*thickness\s*\)",
+    }
+    for what, pattern in needed.items():
+        if not re.search(pattern, code):
+            raise AssertionError(f"gbuffers_water.fsh changed shape ({what}); update the test, not the parse")
+    if not re.search(r"\(1\.0\s*-\s*transmittance\)", water):
+        raise AssertionError("aureliaWaterInscatter changed shape; update the test, not the parse")
 
 
-def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
-    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
-
-
-def composite(thickness: float, shallow: np.ndarray, mid: np.ndarray, deep: np.ndarray,
-              s2m: tuple[float, float], m2d: tuple[float, float],
-              shore: tuple[float, float, float],
-              floor: np.ndarray, lit_body: np.ndarray, grazing: bool = False) -> np.ndarray:
-    """Overhead composite: body(t) at alpha(t) over the floor.
-
-    Overhead the Fresnel cosine is ~1, so Schlick sits at its 0.02 minimum and
-    the reflection/glint terms are negligible by construction; the plate signal
-    is body-times-alpha, which is exactly what this evaluates. With
-    ``grazing=True`` a representative sky reflection carries ~9% of the pixel.
-    """
-    absorb = shallow + (mid - shallow) * _smoothstep(*s2m, np.float64(thickness))
-    absorb = absorb + (deep - absorb) * _smoothstep(*m2d, np.float64(thickness))
-    body = lit_body * absorb
-    if grazing:
-        body = body * GRAZING_BODY_KEEP + GRAZING_REFLECTION * (1.0 - GRAZING_BODY_KEEP)
-    shore_fade = float(_smoothstep(shore[0], shore[1], np.float64(thickness)))
-    alpha = BASE_ALPHA * (shore[2] + (1.0 - shore[2]) * shore_fade)
-    return body * alpha + floor * (1.0 - alpha)
-
-
-def worst_step(shallow: np.ndarray, mid: np.ndarray, deep: np.ndarray,
-               s2m: tuple[float, float], m2d: tuple[float, float],
-               shore: tuple[float, float, float],
-               floor: np.ndarray, lit_body: np.ndarray, grazing: bool = False) -> float:
-    comps = [composite(t, shallow, mid, deep, s2m, m2d, shore, floor, lit_body, grazing)
-             for t in TRANSECT]
-    return max(float(np.linalg.norm(comps[i] - comps[i - 1])) for i in range(1, len(comps)))
+def composite(bed: np.ndarray, t: float, extinction: np.ndarray, scattering: float,
+              backscatter: float) -> np.ndarray:
+    """Overhead pixel in reflectance units (no fog, no glint, sky reflection 0)."""
+    transmittance = np.exp(-extinction * (t + t))  # thickness + bedDepth, straight down
+    seen = (1.0 - F0) * transmittance
+    body = (scattering / extinction) * backscatter * (1.0 - np.exp(-extinction * t))
+    return bed * seen + (1.0 - F0) * body
 
 
 def main() -> int:
     water = WATER_GLSL.read_text(encoding="utf-8")
     fsh = WATER_FSH.read_text(encoding="utf-8")
-    if "#ifdef AURELIA_WATER_DEPTH" not in water or "#ifdef AURELIA_WATER_SHORE" not in water:
-        raise AssertionError("depth/shore gates moved; update the test, not the parse")
-    shallow = _vec3(water, "AURELIA_WATER_BODY_SHALLOW")
-    mid = _vec3(water, "AURELIA_WATER_BODY_MID")
-    deep = _vec3(water, "AURELIA_WATER_BODY_DEEP")
-    s2m = (_float(water, "AURELIA_WATER_SHALLOW_TO_MID"), _float(water, "AURELIA_WATER_MID_TO_DEEP"))
-    m2d = (_float(water, "AURELIA_WATER_MID_TO_DEEP"), _float(water, "AURELIA_WATER_DEEP_FULL"))
-    shore = _shore_params(fsh)
-
-    comps = [composite(t, shallow, mid, deep, s2m, m2d, shore, *CASES["sand_sunlit"])
-             for t in TRANSECT]
-    steps = [float(np.linalg.norm(comps[i] - comps[i - 1])) for i in range(1, len(comps))]
-    print(f"transect thicknesses : {list(TRANSECT)}")
-    print(f"reference-case steps : {[round(s, 3) for s in steps]}")
+    _check_shape(fsh, water)
+    absorption = _vec3(water, "AURELIA_WATER_ABSORPTION")
+    scattering = _float(water, "AURELIA_WATER_SCATTERING")
+    backscatter = _float(water, "AURELIA_WATER_BACKSCATTER")
+    extinction = absorption + scattering
+    deep = (1.0 - F0) * (scattering / extinction) * backscatter
 
     failures: list[str] = []
-    for name, (floor, lit_body) in CASES.items():
-        for grazing in (False, True):
-            worst = worst_step(shallow, mid, deep, s2m, m2d, shore, floor, lit_body, grazing)
-            tag = f"{name}{'_grazing' if grazing else ''}"
-            print(f"worst 1-block jump [{tag:26s}]: {worst:.3f} (limit {MAX_PLATE_STEP})")
-            if worst > MAX_PLATE_STEP:
-                failures.append(
-                    f"PLATES [{tag}]: worst 1-block adjacent jump {worst:.3f} exceeds "
-                    f"{MAX_PLATE_STEP} -- voxel-stepped bathymetry imprints rectangular plates"
-                )
-    floor, lit_body = CASES["sand_sunlit"]
-    shallow_dist = float(np.linalg.norm(comps[0] - floor))
-    print(f"shallow vs floor     : {shallow_dist:.3f} (limit {MAX_SHALLOW_FLOOR_DIST})")
-    if shallow_dist > MAX_SHALLOW_FLOOR_DIST:
-        failures.append(
-            f"READABILITY: shallow water hides the floor (dist {shallow_dist:.3f} > "
-            f"{MAX_SHALLOW_FLOOR_DIST})"
-        )
-    separation = float(np.linalg.norm(
-        composite(DEEP_REFERENCE_T, shallow, mid, deep, s2m, m2d, shore, *CASES["sand_sunlit"]) - comps[1]
-    ))
-    print(f"deep vs shallow sep  : {separation:.3f} (minimum {MIN_DEPTH_SEPARATION})")
-    if separation < MIN_DEPTH_SEPARATION:
-        failures.append(
-            f"GRADING: depth curve flattened (separation {separation:.3f} < "
-            f"{MIN_DEPTH_SEPARATION}); the fix must compress plates, not remove depth"
-        )
+    for name, bed in BEDS.items():
+        trans = [composite(bed, t, extinction, scattering, backscatter) for t in TRANSECT]
+        steps = [float(np.linalg.norm(trans[i] - trans[i - 1])) for i in range(1, len(trans))]
+        column = [composite(bed, t, extinction, scattering, backscatter) for t in DEPTHS]
+        lum = np.array([float(c @ LUMA) for c in column])
+        print(f"{name:12s} steps {[round(s, 3) for s in steps]}  luma {lum.round(3).tolist()}")
+
+        ceiling = np.maximum(bed, deep)
+        for t, c in zip(DEPTHS, column):
+            if np.any(c > ceiling + PALE_EPS):
+                failures.append(f"PALE [{name}] {t} blocks is brighter than both bed and deep water: {c.round(3)}")
+        target = float(deep @ LUMA)
+        distance = np.abs(lum - target)
+        if np.any(np.diff(distance) > PALE_EPS):
+            failures.append(f"NON-MONOTONIC [{name}]: luminance does not settle toward deep water: {lum.round(3)}")
+        jumps = np.abs(np.diff(lum)) / np.diff(DEPTHS)  # per block: the depths are not evenly spaced
+        if np.any(np.diff(jumps) > PALE_EPS):
+            failures.append(f"NOT CONVEX [{name}]: a deeper block changes more than a shallower one: {jumps.round(3)}")
+        if max(steps) > MAX_FIRST_STEP:
+            failures.append(f"PLATES [{name}]: 1-block jump {max(steps):.3f} exceeds {MAX_FIRST_STEP}")
+        seen = float((composite(bed, DEPTHS[0], extinction, 0.0, 0.0) @ LUMA) / (bed @ LUMA))
+        if seen < MIN_SHALLOW_SEEN:
+            failures.append(f"READABILITY [{name}]: one block shows only {seen:.2f} of the bed")
+        if abs(lum[0] - lum[-1]) < MIN_DEPTH_SEPARATION:
+            failures.append(f"GRADING [{name}]: 10 blocks read like 1 ({lum[0]:.3f} vs {lum[-1]:.3f})")
+
+    for failure in failures:
+        print(f"FAIL: {failure}")
     if failures:
-        for failure in failures:
-            print(f"FAIL: {failure}")
         return 1
-    print("PASS: block-step step-contrast reduced across the grid; shallows readable; depth grading intact")
+    print("PASS: water never paler than its bed, settles monotonically with depth, shallows readable")
     return 0
 
 

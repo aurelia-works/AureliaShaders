@@ -4,6 +4,10 @@
 #include "/lib/color.glsl"
 #include "/lib/look.glsl"
 #include "/lib/tonemap.glsl"
+#define AURELIA_SKY_LUT_READ
+#include "/lib/atmosphere.glsl"
+#define AURELIA_EXPOSURE_READ
+#include "/lib/exposure.glsl"
 #include "/lib/debug.glsl"
 
 uniform sampler2D colortex0;
@@ -13,12 +17,10 @@ uniform float aureliaAdaptiveShadowFilterSamples;
 
 uniform sampler2D depthtex0;
 // Nether: no sky geometry is drawn, so open space kept the black colortex0
-// clear (seen in game). Read only inside the hasCeiling branch below, so the
-// Overworld pays no fetch.
-uniform bool hasCeiling;
+// clear (seen in game). Read only inside the hasCeiling branch below
+// (hasCeiling is declared by lib/exposure.glsl), so the Overworld pays no fetch.
 
 #ifdef AURELIA_DISTANT_RAIN
-uniform float frameTimeCounter;
 uniform mat4 gbufferProjectionInverse;
 #endif
 
@@ -33,16 +35,44 @@ uniform mat4 gbufferProjectionInverse;
 uniform sampler2D shadowtex1;
 #endif
 
+uniform float viewWidth;
+uniform float viewHeight;
+#include "/lib/sun_effects.glsl"
+#include "/lib/post.glsl"
+
 in vec2 texcoord;
+
+#ifdef AURELIA_PURKINJE
+// Night vision. Below roughly moonlight levels the cones give way to the
+// rods, which see one channel peaking in blue-green: colour drains out and
+// what is left reads cool. Keyed to the absolute (pre-exposure) luminance,
+// so a moonlit field shifts while a lamp-lit street beside it keeps its
+// colour.
+vec3 aureliaPurkinje(vec3 color) {
+    float photopic = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float rod = dot(color, vec3(0.05, 0.60, 0.45));
+    float scotopic = 1.0 - smoothstep(-10.5, -5.0, log2(max(photopic, 1e-7)));
+    return mix(color, rod * vec3(0.56, 0.78, 1.12), scotopic * 0.85);
+}
+#endif
 
 // One linear floating-point scene target preserves values above 1.0 until the
 // ACES-like tone mapper. Iris reads these directives from the comment; keeping
 // them out of the GLSL source keeps desktop validators portable.
+// Iris reads this from the preprocessed fragment sources (lib/options.glsl).
+const float sunPathRotation = AURELIA_SUN_PATH_ROTATION;
+
 /*
 const int colortex0Format = RGBA16F;
 const bool colortex0Clear = true;
 const vec4 colortex0ClearColor = vec4(0.0, 0.0, 0.0, 1.0);
 */
+#ifdef AURELIA_BLOOM
+// Bloom reads colortex0's mip chain; Iris rebuilds it just before this pass.
+/*
+const bool colortex0MipmapEnabled = true;
+*/
+#endif
 
 /* RENDERTARGETS: 0 */
 layout(location = 0) out vec4 aureliaSceneColor;
@@ -53,7 +83,7 @@ void main() {
 
 #if AURELIA_DEBUG_VIEW == 0
     color = scene.rgb;
-    if (hasCeiling && texture(depthtex0, texcoord).r >= 1.0) color = aureliaFogColorLinear();
+    if (hasCeiling && texture(depthtex0, texcoord).r >= 1.0) color = aureliaFogColorLinear() * AURELIA_NETHER_FOG_SCALE;
     #ifdef AURELIA_DISTANT_RAIN
         // The curtain composites into the LINEAR scene before grading, so
         // distant rain goes through the same tonemap/sRGB as everything else.
@@ -61,7 +91,25 @@ void main() {
     #endif
     // aureliaGrade returns display-encoded sRGB (contrast needs a perceptual
     // pivot), so it replaces the encode below instead of feeding it.
-    color = aureliaGrade(color);
+    // Image effects in the linear scene, before grading: sharpening first
+    // (on the scene as rendered), then light spread by the air and the lens.
+#ifdef AURELIA_SHARPEN
+    color = aureliaSharpen(color, ivec2(gl_FragCoord.xy));
+#endif
+#ifdef AURELIA_BLOOM
+    color = aureliaApplyBloom(color, texcoord);
+#endif
+#ifdef AURELIA_GOD_RAYS
+    color = aureliaApplyGodRays(color, texcoord,
+        fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))));
+#endif
+#ifdef AURELIA_LENS_FLARE
+    color = aureliaApplyLensFlare(color, texcoord);
+#endif
+#ifdef AURELIA_PURKINJE
+    color = aureliaPurkinje(color);
+#endif
+    color = aureliaGrade(color * aureliaExposure());
     // 1-ALU-class interleaved-gradient-noise dither, +-0.5 LSB, hides 8-bit
     // banding in the smooth sky/fog gradients that the steep curve stretches.
     color += (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5)

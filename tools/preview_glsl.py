@@ -36,6 +36,13 @@ COMPAT_REWRITES: tuple[tuple[str, str], ...] = (
     (r"\bgl_Color\b", "aureliaColor"),
     (r"\bgl_Vertex\b", "aureliaVertex"),
     (r"\bgl_Normal\b", "aureliaNormal"),
+    # Iris's own vertex attributes. The pack declares them itself (`in vec4
+    # mc_Entity;`); the declaration is dropped and the name mapped onto the
+    # prelude's located attribute.
+    (r"^\s*(?:in|attribute)\s+vec[234]\s+(?:mc_Entity|at_tangent|mc_midTexCoord)\s*;[^\n]*$", ""),
+    (r"\bmc_Entity\b", "aureliaEntity"),
+    (r"\bat_tangent\b", "aureliaTangent"),
+    (r"\bmc_midTexCoord\b", "aureliaMidTexCoord"),
     # ftransform() is gl_Position = P * MV * vertex, applied in that order.
     (r"\bftransform\s*\(\s*\)", "(aureliaProjectionViewMatrix * aureliaVertex)"),
 )
@@ -55,6 +62,10 @@ VERTEX_ATTRIBUTES: tuple[tuple[str, int, int], ...] = (
     ("vec4 aureliaColor", 4, 4),
     ("vec4 aureliaTexCoord0", 4, 2),
     ("vec4 aureliaTexCoord1", 4, 2),
+    # mc_Entity.x is the block.properties ID (0 when a block has none).
+    ("vec4 aureliaEntity", 4, 1),
+    ("vec4 aureliaTangent", 4, 4),
+    ("vec4 aureliaMidTexCoord", 4, 2),
 )
 
 # Interleaved buffer order: position, normal, colour, texcoord0, texcoord1.
@@ -64,6 +75,9 @@ VERTEX_UPLOAD: tuple[str, ...] = (
     "color",
     "texcoord0",
     "texcoord1",
+    "entity",
+    "tangent",
+    "midtexcoord",
 )
 VERTEX_UPLOAD_COMPONENTS: tuple[int, ...] = tuple(upload for _, _, upload in VERTEX_ATTRIBUTES)
 
@@ -129,8 +143,12 @@ def build_source(
     stage: str,
     overrides: dict[str, str] | None = None,
     undefined: set[str] | None = None,
+    enabled: set[str] | None = None,
 ) -> str:
     """Expand includes, apply option overrides, and shim compat builtins.
+
+    ``enabled`` turns on booleans that ship off (``//#define X``), as a preset
+    that lists them does in Iris.
 
     ``stage`` is ``"vsh"`` or ``"fsh"``. The returned source is a complete,
     self-contained GLSL 330 core shader ready for a desktop driver.
@@ -140,11 +158,11 @@ def build_source(
     if stage not in ("vsh", "fsh"):
         raise ValueError(f"unsupported stage: {stage}")
     source = expand(shaders_root / f"{program}.{stage}", shaders_root)
-    source = apply_defines(source, overrides or {}, undefined or set())
+    source = apply_defines(source, overrides or {}, undefined or set(), enabled or set())
 
     source = re.sub(r"^#version\s+330\s+compatibility\b", "#version 330 core", source, count=1, flags=re.M)
     for pattern, replacement in COMPAT_REWRITES:
-        source = re.sub(pattern, replacement, source)
+        source = re.sub(pattern, replacement, source, flags=re.M)
 
     prelude = VERTEX_PRELUDE if stage == "vsh" else FRAGMENT_PRELUDE
     # Keep the #version directive first; it is only legal there.

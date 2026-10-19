@@ -26,8 +26,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preview_glsl import ProfileError, parse_profile  # noqa: E402
 from preview_render import Camera, PreviewRenderer, Sky  # noqa: E402
 from preview_scene import load_scene  # noqa: E402
+from preview_city import CITY_CAMERAS, load_city  # noqa: E402
 
 PROFILES = ("POTATO", "LOW", "BALANCED", "CINEMATIC", "ADAPTIVE")
+
+
+def preset_enabled(shaders_root: Path, profile: str) -> set[str]:
+    """The booleans a preset turns on, including ones that ship off."""
+    return parse_profile(shaders_root, profile)[1]
 
 
 def presets(shaders_root: Path, profile: str) -> tuple[dict[str, str], set[str]]:
@@ -43,6 +49,12 @@ def presets(shaders_root: Path, profile: str) -> tuple[dict[str, str], set[str]]
 
 
 def camera_for(name: str) -> Camera:
+    if name in CITY_CAMERAS:
+        return Camera(**CITY_CAMERAS[name])
+    return _island_camera(name)
+
+
+def _island_camera(name: str) -> Camera:
     """Named viewpoints.
 
     One fixed camera cannot judge a whole look: Fresnel only shows at grazing
@@ -161,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--camera",
         default=None,
-        choices=CAMERAS + UNDERWATER_CAMERAS,
+        choices=CAMERAS + UNDERWATER_CAMERAS + tuple(CITY_CAMERAS),
         help="viewpoint; default renders a contact sheet of every viewpoint",
     )
     parser.add_argument("--sheet-only", action="store_true", help="write only the contact sheet")
@@ -191,6 +203,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=root / "preview")
     parser.add_argument("--no-sky", action="store_true", help="skip the sky passes")
     parser.add_argument(
+        "--scene", choices=("island", "city"), default="island",
+        help="island: the original procedural island; city: canal, streets and towers (preview_city.py)",
+    )
+    parser.add_argument(
+        "--frames", type=int, default=1,
+        help="render each view N times and keep the last, so history passes (clouds, exposure) settle",
+    )
+    parser.add_argument(
+        "--render-distance", type=float, default=0.0,
+        help="Iris `far` in blocks; 0 (default) keeps far-dependent terms off as in earlier evidence",
+    )
+    parser.add_argument(
         "--bench",
         type=int,
         default=0,
@@ -199,15 +223,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    print(f"building scene (seed {args.seed}) ...", flush=True)
-    atlas, world, batches = load_scene(seed=args.seed, atlas_seed=args.atlas_seed)
+    print(f"building scene ({args.scene}, seed {args.seed}) ...", flush=True)
+    if args.scene == "city":
+        atlas, world, batches = load_city()
+    else:
+        atlas, world, batches = load_scene(seed=args.seed, atlas_seed=args.atlas_seed)
     for name, batch in batches.items():
         print(f"  {name:8s} {batch.count:7d} triangles")
 
     targets = list(PROFILES) if args.all_profiles else [args.profile]
     # No --camera means render every viewpoint and compose a contact sheet, so a
     # look change is judged against all of them rather than one flattering angle.
-    viewpoints = [args.camera] if args.camera else list(CAMERAS)
+    viewpoints = [args.camera] if args.camera else list(CITY_CAMERAS if args.scene == "city" else CAMERAS)
     written: list[Path] = []
     try:
         for preset in targets:
@@ -227,6 +254,8 @@ def main(argv: list[str] | None = None) -> int:
                 undefined=undefined,
                 frame_time=args.frame_time,
                 underwater_eye=args.underwater_eye,
+                enabled=preset_enabled(shaders_root, preset),
+                render_distance=args.render_distance,
             )
             try:
                 sky = Sky(time=args.time, rain=args.rain)
@@ -238,9 +267,10 @@ def main(argv: list[str] | None = None) -> int:
                 last_stats = {}
                 for viewpoint in viewpoints:
                     camera = camera_for(viewpoint)
-                    image, last_stats = renderer.render(
-                        batches, atlas, camera, sky, draw_sky=not args.no_sky
-                    )
+                    for _ in range(max(1, args.frames)):
+                        image, last_stats = renderer.render(
+                            batches, atlas, camera, sky, draw_sky=not args.no_sky
+                        )
                     tiles.append((viewpoint, image))
                     if args.sheet_only:
                         continue

@@ -27,18 +27,24 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-RENDERTARGETS = re.compile(r"/\*\s*RENDERTARGETS\s*:\s*([0-9][0-9\s]*)\*/")
+RENDERTARGETS = re.compile(r"/\*\s*RENDERTARGETS\s*:\s*([0-9][0-9,\s]*)\*/")
 FORMAT = re.compile(r"const\s+int\s+colortex(\d+)Format\s*=\s*(\w+)\s*;")
 CLEAR = re.compile(r"const\s+bool\s+colortex(\d+)Clear\s*=\s*(true|false)\s*;")
 CLEAR_COLOR = re.compile(
     r"const\s+vec4\s+colortex(\d+)ClearColor\s*=\s*vec4\(\s*([^)]*?)\s*\)\s*;"
 )
 SIZE = re.compile(r"size\.buffer\.colortex(\d+)\s*=\s*([0-9.]+)\s+([0-9.]+)")
+MIPMAP = re.compile(r"const\s+bool\s+colortex(\d+)MipmapEnabled\s*=\s*true\s*;")
 
 DEFAULT_FORMAT = "RGBA8"
 
 # Iris program-name order for composite-style passes. `final` is last and writes
 # to the default framebuffer; the rest write to their declared RENDERTARGETS.
+# Iris runs the prepare passes after the shadow pass and before any gbuffers
+# program, the deferred passes between the opaque and the translucent geometry,
+# and the composite passes after everything.
+PREPARE_ORDER: tuple[str, ...] = ("prepare",) + tuple(f"prepare{i}" for i in range(1, 8))
+DEFERRED_ORDER: tuple[str, ...] = ("deferred",) + tuple(f"deferred{i}" for i in range(1, 8))
 COMPOSITE_ORDER: tuple[str, ...] = (
     "prepare",
     "deferred",
@@ -63,8 +69,14 @@ class TargetConfig:
     clear: bool = False
     clear_color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     scale: tuple[float, float] = (1.0, 1.0)
+    # Iris reads a size.buffer value without a decimal point as an absolute
+    # pixel count (e.g. a 256 x 128 lookup table) and one with a point as a
+    # fraction of the screen.
+    absolute: tuple[int, int] | None = None
 
     def size(self, width: int, height: int) -> tuple[int, int]:
+        if self.absolute is not None:
+            return self.absolute
         return (
             max(1, int(round(width * self.scale[0]))),
             max(1, int(round(height * self.scale[1]))),
@@ -76,7 +88,7 @@ def parse_render_targets(source: str) -> list[int]:
     match = RENDERTARGETS.search(source)
     if match is None:
         return []
-    return [int(token) for token in match.group(1).split()]
+    return [int(token) for token in re.split(r"[,\s]+", match.group(1).strip()) if token]
 
 
 def _explicit_fields(
@@ -85,13 +97,13 @@ def _explicit_fields(
     dict[int, str],
     dict[int, bool],
     dict[int, tuple[float, float, float, float]],
-    dict[int, tuple[float, float]],
+    dict[int, tuple[str, str]],
 ]:
     """Only the fields a source *explicitly* declares, per target index."""
     fmt: dict[int, str] = {}
     clear: dict[int, bool] = {}
     clear_color: dict[int, tuple[float, float, float, float]] = {}
-    scale: dict[int, tuple[float, float]] = {}
+    scale: dict[int, tuple[str, str]] = {}
 
     for match in FORMAT.finditer(source):
         fmt[int(match.group(1))] = match.group(2)
@@ -108,7 +120,7 @@ def _explicit_fields(
             components[3],
         )
     for match in SIZE.finditer(properties):
-        scale[int(match.group(1))] = (float(match.group(2)), float(match.group(3)))
+        scale[int(match.group(1))] = (match.group(2), match.group(3))
     return fmt, clear, clear_color, scale
 
 
@@ -117,14 +129,19 @@ def _build(
     fmt: dict[int, str],
     clear: dict[int, bool],
     clear_color: dict[int, tuple[float, float, float, float]],
-    scale: dict[int, tuple[float, float]],
+    scale: dict[int, tuple[str, str]],
 ) -> TargetConfig:
+    raw = scale.get(index, ("1.0", "1.0"))
+    absolute = None
+    if "." not in raw[0] and "." not in raw[1]:
+        absolute = (int(raw[0]), int(raw[1]))
     return TargetConfig(
         index=index,
         fmt=fmt.get(index, DEFAULT_FORMAT),
         clear=clear.get(index, False),
         clear_color=clear_color.get(index, (0.0, 0.0, 0.0, 0.0)),
-        scale=scale.get(index, (1.0, 1.0)),
+        scale=(float(raw[0]), float(raw[1])),
+        absolute=absolute,
     )
 
 
@@ -153,7 +170,7 @@ def collect_target_configs(shaders_root: Path) -> dict[int, TargetConfig]:
     fmt: dict[int, str] = {}
     clear: dict[int, bool] = {}
     clear_color: dict[int, tuple[float, float, float, float]] = {}
-    scale: dict[int, tuple[float, float]] = {}
+    scale: dict[int, tuple[str, str]] = {}
     written: set[int] = set()
 
     def merge(store: dict, incoming: dict, field: str) -> None:
@@ -180,6 +197,19 @@ def collect_target_configs(shaders_root: Path) -> dict[int, TargetConfig]:
     }
 
 
+def mipmapped_targets(source: str) -> list[int]:
+    """Targets a pass asks Iris to rebuild the mip chain of before it runs."""
+    return sorted({int(match.group(1)) for match in MIPMAP.finditer(source)})
+
+
+def passes_present(shaders_root: Path, order: tuple[str, ...]) -> list[str]:
+    """Programs from ``order`` the pack ships as a vsh/fsh pair, in that order."""
+    return [
+        name for name in order
+        if (shaders_root / f"{name}.fsh").is_file() and (shaders_root / f"{name}.vsh").is_file()
+    ]
+
+
 def composite_passes_present(shaders_root: Path) -> list[str]:
     """Composite-style programs the pack ships, in Iris execution order."""
     present: list[str] = []
@@ -204,6 +234,9 @@ def _self_check() -> int:
     assert configs[0].clear_color == (0.0, 0.0, 0.0, 1.0), configs[0].clear_color
     assert configs[1].scale == (0.5, 0.5), configs[1].scale
     assert configs[1].size(960, 540) == (480, 270), configs[1].size(960, 540)
+    lut = parse_target_configs("const int colortex2Format = RGBA16F;", "size.buffer.colortex2 = 256 128")
+    assert lut[2].size(960, 540) == (256, 128), lut[2].size(960, 540)
+    assert mipmapped_targets("const bool colortex3MipmapEnabled = true;") == [3]
     print("preview_targets self-check: PASS")
 
     root = Path(__file__).resolve().parents[1] / "shaders"

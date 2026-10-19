@@ -14,16 +14,20 @@ in vec2 lmcoord;
 in vec4 vertexColor;
 in vec3 worldNormal;
 in vec3 playerPosition;
+in vec4 fogTerms;
 
-/* RENDERTARGETS: 0 */
+/* RENDERTARGETS: 0,1 */
 layout(location = 0) out vec4 aureliaSceneColor;
+// Opaque programs drawn before deferred.fsh all write the G-buffer, so a mob
+// or item in front of a polished wall does not inherit the wall's reflection.
+layout(location = 1) out vec4 aureliaGbuffer;
 
 void main() {
     vec4 albedo = aureliaDecodeSrgbModulation(texture(gtexture, texcoord), vertexColor);
     if (albedo.a < alphaTestRef) discard;
 
     vec3 color = aureliaForwardLight(albedo.rgb, worldNormal, lmcoord, playerPosition);
-    color = aureliaApplyFog(color, playerPosition);
+    color = aureliaApplyFogTerms(color, fogTerms);
     // Preserve Minecraft's hurt/team overlay without an extra material path.
     // entityColor is another Minecraft sRGB color input; its alpha is a
     // coverage/overlay weight and remains linear.
@@ -35,4 +39,5 @@ void main() {
     color = vec3(aureliaShadowDebug(playerPosition, worldNormal));
 #endif
     aureliaSceneColor = vec4(color, albedo.a);
+    aureliaGbuffer = vec4(0.0);
 }

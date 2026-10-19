@@ -1,20 +1,119 @@
-// Original compact forward lighting. Inputs are world/player-space normal,
-// corrected Minecraft lightmap coordinates, and camera-relative view position.
+// Physically based forward lighting (Phase 5).
 //
-// Contract quantities (sun direction/height/visibility/colour, ambient tint,
-// fog curve, weather coefficients) live in lib/look.glsl and are included here.
-// This file keeps the forward-lighting composition plus the shadow-receiver
-// direction, which is deliberately NOT part of the visual contract: Iris exposes
-// shadowLightPosition as the highest celestial body (the moon at night), while
-// daylight terms stay on sunPosition, so the two must not be conflated.
-// See docs/LOOK-CONTRACT.md and docs/PHASE2A.md.
+// Light comes from five sources, all in the shader units of lib/atmosphere.glsl
+// and all read from the sky-view LUT the prepare pass bakes each frame:
+//   - the sun and the moon (direct, shadow-mapped), coloured by the air they
+//     cross, so noon is white, golden hour amber and a low moon dim and warm;
+//   - the sky dome (irradiance from five directions, occluded by Minecraft's
+//     sky light level and the vertex AO);
+//   - block light, a warm 2700 K-like source with an inverse-square-like
+//     falloff over Minecraft's light levels;
+//   - emission from lamp blocks (lib/materials.glsl).
+// Surfaces are Lambertian diffuse plus a GGX specular lobe for the sun and a
+// split-sum sky reflection. Smooth surfaces also get screen-space reflections
+// in deferred.fsh, which corrects the sky reflection added here where the
+// reflected ray finds geometry.
+//
+// Inputs are world/player-space normals and the camera-relative player-space
+// position; the camera sits at the origin.
 #include "/lib/color.glsl"
 #include "/lib/look.glsl"
 #include "/lib/sky.glsl"
+#include "/lib/materials.glsl"
+#include "/lib/brdf.glsl"
 
 uniform vec3 shadowLightPosition;
 
 #include "/lib/shadows.glsl"
+
+// Block light: 2700 K-ish, between a candle flame and a warm-white bulb.
+const vec3  AURELIA_BLOCK_LIGHT_COLOR = vec3(1.00, 0.58, 0.28);
+const float AURELIA_BLOCK_LIGHT       = 2.4;
+// Light that reaches everywhere, even a sealed cave: keeps black from being
+// pure black. AURELIA_NIGHT_LIFT scales it (0.16 is the reference).
+const float AURELIA_MIN_LIGHT         = 0.0035;
+// Interreflection: light the LUT's sky integral cannot see, bounced between
+// nearby sunlit walls, streets and foliage. Physically the open sky alone
+// leaves a shaded wall about three stops under a sunlit one; neighbouring
+// lit surfaces lift that to the two-and-a-bit stops a city street shows.
+const float AURELIA_SKY_FILL          = 1.35;
+
+// Block light irradiance at a light level (0..1). Level 15 is the source's
+// own block; each step is a block further away. An inverse square of that
+// distance, plus a slow tail so the far edge of a lit area does not vanish.
+vec3 aureliaBlockLight(float level) {
+    float distance = 15.0 * (1.0 - clamp(level, 0.0, 1.0));
+    float falloff = 1.0 / ((distance + 1.0) * (distance + 1.0)) + 0.045 * level * level;
+    return AURELIA_BLOCK_LIGHT_COLOR * (AURELIA_BLOCK_LIGHT * falloff * smoothstep(0.0, 0.07, level));
+}
+
+// --- Rain on surfaces ------------------------------------------------------------
+#ifdef AURELIA_WET_SURFACES
+    #ifdef AURELIA_TERRAIN_FRAGMENT
+        #define AURELIA_WET_TERRAIN
+    #endif
+#endif
+#ifdef AURELIA_WET_TERRAIN
+uniform float wetness;          // Iris: rainStrength eased over wetnessHalflife
+#ifndef AURELIA_NOISETEX_DECLARED
+#define AURELIA_NOISETEX_DECLARED
+uniform sampler2D noisetex;     // Iris built-in, 256x256 random bytes, linear
+#endif
+
+float aureliaWetNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return textureLod(noisetex, (i + f + 0.5) / 256.0, 0.0).g;
+}
+
+// One raindrop ring per cell: a jittered centre, a random start time, a ring
+// that grows and fades over its life. Returns the ring's surface slope (xz).
+vec2 aureliaRippleSlope(vec2 p, float time) {
+    vec2 cell = floor(p);
+    vec3 random = textureLod(noisetex, (cell + 0.5) / 256.0, 0.0).rgb;
+    vec2 local = fract(p) - 0.25 - 0.5 * random.xy;
+    float age = fract(time * 0.9 + random.z);
+    float distanceToCentre = length(local);
+    float band = 1.0 - smoothstep(0.0, 0.05, abs(distanceToCentre - age * 0.45));
+    return local / max(distanceToCentre, 1e-3) * (band * (1.0 - age));
+}
+
+// Rain under open sky. Porous surfaces darken as water fills them; hard wet
+// surfaces turn glossy (a film over the grain, still rough enough that SSR
+// blurs what it reflects); up-facing hard ground collects puddles where a
+// world-space noise field dips, mirror-smooth and flat apart from raindrop
+// rings. Soil, sand and turf (material `drains`) take the water instead:
+// darker, a faint sheen, no standing water. The reflections themselves come
+// from the shading below and from SSR.
+void aureliaWetSurface(inout vec3 albedo, inout AureliaMaterial m, inout vec3 normal,
+                       vec3 playerPosition, float skyLevel) {
+    float wet = wetness * smoothstep(0.86, 0.97, skyLevel);
+    if (wet <= 0.002) return;
+    float up = smoothstep(0.70, 0.95, normal.y);
+    vec2 world = playerPosition.xz + cameraPosition.xz;
+    float field = 0.65 * aureliaWetNoise(world * 0.045) + 0.35 * aureliaWetNoise(world * 0.16 + 31.7);
+    float edge = 0.62 - 0.12 * wetness;
+    float puddle = smoothstep(edge, edge + 0.06, field) * up * wet * (1.0 - m.translucency) * (1.0 - m.drains);
+
+    // Darkening: a wet surface's albedo moves toward its own square.
+    float soak = wet * mix(0.45, 1.0, up) * m.porosity + puddle * 0.5;
+    albedo = mix(albedo, albedo * albedo, clamp(soak, 0.0, 1.0));
+    float film = mix(0.66, 0.30, m.drains);
+    m.smoothness = mix(m.smoothness, max(m.smoothness, film), wet * mix(0.35, 1.0, up) * (1.0 - m.translucency));
+    m.smoothness = mix(m.smoothness, 0.97, puddle);
+    m.f0 = mix(m.f0, 0.02, puddle);
+
+    if (puddle > 0.0 && rainStrength > 0.0) {
+        vec2 slope = aureliaRippleSlope(world * 1.4, frameTimeCounter)
+                   + aureliaRippleSlope(world * 1.4 + vec2(0.5, 0.37), frameTimeCounter * 1.13 + 0.4);
+        slope *= 0.30 * rainStrength;
+        normal = normalize(mix(normal, normalize(vec3(-slope.x, 1.0, -slope.y)), puddle));
+    }
+}
+#endif
+
+// --- Shadows -----------------------------------------------------------------------
 
 vec3 aureliaShadowDirection() {
     return normalize(mat3(gbufferModelViewInverse) * shadowLightPosition);
@@ -24,13 +123,9 @@ vec3 aureliaShadowDirection() {
 // that body is not the one the shadow camera is rendering.
 //
 // Iris points the shadow camera at the highest celestial body and flips from the
-// sun to the moon when the sun crosses the horizon, while sunUp (the contract's
-// daylight fade) is still ~0.58 there. Treating the map as the sun's during that
-// stretch shadows twilight light with the moon's depths. So each body only reads
-// the map while the camera actually points at it (dot test on directions that
-// agree to ~1.0 or disagree to ~-1.0), and the weight ramps in over the first few
-// degrees above the horizon so the hand-over never pops. The moon uses the same
-// single lookup the sun does, so the night costs no more than the day.
+// sun to the moon when the sun crosses the horizon. Each body only reads the
+// map while the camera actually points at it, and the weight ramps in over the
+// first few degrees above the horizon so the hand-over never pops.
 vec2 aureliaShadowTerms(vec3 playerPosition, vec3 normal, float skyLight) {
     vec2 terms = vec2(1.0);
 #ifdef AURELIA_SHADOWS
@@ -39,8 +134,6 @@ vec2 aureliaShadowTerms(vec3 playerPosition, vec3 normal, float skyLight) {
     vec3 moonDir = aureliaMoonDirection();
     float sunMap = step(0.5, dot(shadowDir, sunDir)) * smoothstep(0.0, 0.05, sunDir.y);
     float moonMap = step(0.5, dot(shadowDir, moonDir)) * smoothstep(0.0, 0.06, moonDir.y);
-    // Both gates are uniform per frame except skyLight; the tap is a
-    // derivative-free textureLod so skipping it underground is well defined.
     if (skyLight > 0.002 && sunMap + moonMap > 0.0) {
         float visibility = aureliaShadowReceive(playerPosition, normal, shadowDir, rainStrength);
         terms = vec2(mix(1.0, visibility, sunMap), mix(1.0, visibility, moonMap));
@@ -55,131 +148,116 @@ float aureliaShadowDebug(vec3 playerPosition, vec3 worldNormal) {
     return terms.x * terms.y;
 }
 
-vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 playerPosition) {
-    vec3 lightDir = aureliaSunDirection();
-    float sunUp = aureliaSunVisibility();
-    // Lightmap coordinates are perceptual samples, not linear irradiance.
-    // Recover a little mid-range energy before applying the analytical model;
-    // this avoids the Phase 1 underexposure on ordinary outdoor blocks.
-    float skyLight = pow(clamp(lightLevel.y, 0.0, 1.0), 0.72);
-    float blockLight = pow(clamp(lightLevel.x, 0.0, 1.0), 0.80);
-    // One normalize() for the interpolated normal; the shadow receiver and the
-    // optional terms below all reuse this local.
-    vec3 normal = normalize(worldNormal);
-    float ndl = max(dot(normal, lightDir), 0.0);
+// --- Shading -----------------------------------------------------------------------
 
-    // Sky light remains a broad fill: a neutral base with only a restrained
-    // cool bias. The strong teal cast in the earlier grade came from blending
-    // the fill toward the decoded sky colour - blue ambient landed on green
-    // albedo and tinted the whole world. That is reverted: the ambient stays
-    // the contract's neutral-with-cool-bias tint, and any sky-tinted shading
-    // is deliberately not carried by the ambient term at all.
-    vec3 ambientTint = aureliaAmbientTint(skyLight);
-    // Rain cools the fill toward the sky tint and lifts it slightly: an
-    // overcast dome dominates the ambient, and its colour is the sky's, not
-    // the neutral ground bounce. Contrast falls via the direct term below.
-    ambientTint = mix(ambientTint, AURELIA_AMBIENT_SKY, 0.35 * rainStrength);
-    // Two fills: the existing sky-driven term, plus a small constant floor.
-    // The floor is what stops shadowed and overhang faces crushing to black:
-    // the steep ACES curve plus AURELIA_CONTRAST deepens anything already
-    // below mid-grey, so a purely proportional fill cannot protect them.
-    // The daylight part of the sky fill fades to a restrained residual at
-    // night - moonlight below replaces it as the directional source - because
-    // leaving it up made night terrain read as a dim overcast afternoon.
-    // Night residual 0.22 keeps the night fill where it was (0.80 * 0.22 equals
-    // the old 0.44 * 0.40) after the daytime sky scale was raised.
-    float dayFill = mix(0.22, 1.0, sunUp);
-    vec3 coolAmbient = ambientTint
-        * (AURELIA_NIGHT_LIFT + AURELIA_AMBIENT_SKY_SCALE * skyLight * dayFill
-           * (1.0 + 0.08 * rainStrength))
-        + vec3(0.055, 0.057, 0.063);
-    if (hasCeiling) coolAmbient += AURELIA_NETHER_AMBIENT;
-    vec2 shadowTerms = aureliaShadowTerms(playerPosition, normal, skyLight);
-    float shadow = shadowTerms.x;
-    vec3 direct = aureliaSunColor(lightDir.y) * (sunUp * skyLight * ndl * AURELIA_DIRECT_LIGHT * AURELIA_SUN_INTENSITY * shadow);
-    vec3 torch = vec3(1.00, 0.66, 0.38) * (blockLight * blockLight * 1.10);
-    // Rain suppresses direct sun contrast and saturation of the accumulated
-    // light: overcast light is desaturated and soft. The desaturation is at
-    // the material stage (the illumination, not the final image), and only in
-    // rain, so dry weather stays bit-identical.
-    direct *= 1.0 - AURELIA_RAIN_SUN_DIM * rainStrength;
+// The direct contribution of one celestial body: Lambert + GGX, and light
+// through thin foliage.
+vec3 aureliaDirect(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 irradiance, AureliaMaterial m,
+                   vec3 f0, float alpha, float NdotV) {
+    float NdotL = dot(n, l);
+    vec3 result = vec3(0.0);
+    if (NdotL > 0.0) {
+        vec3 h = normalize(l + v);
+        float NdotH = max(dot(n, h), 0.0);
+        float VdotH = max(dot(v, h), 0.0);
+        // The sun is a disc, not a point: its highlight never gets sharper
+        // than about alpha 0.02 however smooth the surface.
+        float specAlpha = max(alpha, 0.02);
+        vec3 fresnel = aureliaSchlick(f0, VdotH);
+        vec3 specular = fresnel * (aureliaGgx(NdotH, specAlpha) * aureliaSmithVisibility(NdotV, NdotL, specAlpha));
+        vec3 diffuse = albedo * ((1.0 - m.metal) / AURELIA_PI) * (1.0 - fresnel);
+        result = (diffuse + specular) * (irradiance * NdotL);
+    }
+    if (m.translucency > 0.0) {
+        // Light through a leaf: diffuse transmission off the back face, with a
+        // forward-scattering lobe when the camera looks toward the light.
+        float back = max(-NdotL, 0.0);
+        float forward = max(dot(-v, l), 0.0);
+        forward *= forward;
+        forward *= forward;
+        result += albedo * albedo * irradiance
+                * (m.translucency * (0.35 * back + 0.9 * forward + 0.08) / AURELIA_PI);
+    }
+    return result;
+}
 
-    // Moonlight: the night's directional source. Without it night terrain is a
-    // pure silhouette - only a proportional sky fill, which the grade then
-    // crushes. Cool and dim, gated by the moon's own visibility so it cannot
-    // leak into daylight, and softened by weather.
-    float moonUp = smoothstep(-0.05, 0.05, aureliaMoonDirection().y);
-    float moonNdl = max(dot(normal, aureliaMoonDirection()), 0.0);
-    vec3 moonlight = vec3(0.20, 0.23, 0.30)
-        * ((1.0 - sunUp) * moonUp * skyLight * moonNdl * shadowTerms.y * (1.0 - 0.5 * rainStrength));
+// Full shading of an opaque surface. albedo is linear and excludes the
+// vertex AO, which only occludes the indirect terms. Returns radiance.
+vec3 aureliaShade(vec3 albedo, vec3 n, vec2 lightLevel, vec3 playerPosition, AureliaMaterial m, float ao,
+                  out float sunShadow) {
+    vec3 v = -normalize(playerPosition); // surface to eye
+    vec3 sunDir = aureliaSunDirection();
+    vec3 moonDir = aureliaMoonDirection();
+    float NdotV = max(dot(n, v), 1e-3);
+    float alpha = aureliaAlpha(m.smoothness);
+    float roughness = sqrt(alpha);
+    vec3 f0 = mix(vec3(m.f0), albedo, m.metal);
 
-    // Optional per-pixel terms, both ALU only: no sampler, uniform, render
-    // target, or pass. With both options undefined the additions below vanish
-    // at compile time and this is the original expression.
-    vec3 lit = coolAmbient + direct + torch + moonlight;
+    float skyLevel = clamp(lightLevel.y, 0.0, 1.0);
+    float skyVisibility = aureliaSkyVisibility(skyLevel);
+    // Direct light needs a view of the sky at all: beyond the shadow map, and
+    // under Potato's missing one, this keeps the sun out of caves.
+    float openSky = smoothstep(0.30, 0.85, skyLevel);
+    vec2 shadowTerms = aureliaShadowTerms(playerPosition, n, skyLevel);
+    sunShadow = shadowTerms.x;
 
-    // Rain desaturates the accumulated illumination toward its own luma: the
-    // scene loses chroma without going grey (the ambient keeps its cool bias
-    // and torches stay warm because only the sum is softened, and by 25%).
-    float rainLuma = dot(lit, vec3(0.2126, 0.7152, 0.0722));
-    lit = mix(vec3(rainLuma), lit, 1.0 - 0.25 * rainStrength);
-
-#if defined(AURELIA_FOLIAGE_TRANSLUCENCY) || defined(AURELIA_WETNESS_SPECULAR)
-    // playerPosition is camera-relative player space, so the camera sits at its
-    // origin and this is the camera-to-fragment view direction in world axes.
-    // The celestial directions were already converted to world space above, so
-    // view and light vectors can be combined directly.
-    vec3 viewDir = normalize(playerPosition);
-#endif
-
-#ifdef AURELIA_FOLIAGE_TRANSLUCENCY
-    // Wrapped transmission for thin geometry. backLit is high only where the
-    // visible face is turned away from the sun, sunBehind only where the camera
-    // looks sunward, so back-lit leaves and grass pick up sunlight instead of
-    // going black while front-lit terrain gains nothing. The term is gated by
-    // the shadow lookup: transmission is sunlight reaching the leaf, so a leaf
-    // the shadow map says is blocked must not glow from the wrong side. The
-    // previous version deliberately skipped that gate and read as a self-lit
-    // glow in every shaded canopy. Tinted by albedo through the product below.
-    float backLit = max(-dot(normal, lightDir), 0.0);
-    float sunBehind = max(dot(viewDir, lightDir), 0.0);
-    lit += aureliaSunColor(lightDir.y) * (sunUp * skyLight * 0.28 * shadow
-        * (1.0 - AURELIA_RAIN_SUN_DIM * rainStrength) * backLit * sunBehind * sunBehind);
-#endif
-
-    vec3 color = albedo * lit;
-
-#ifdef AURELIA_WETNESS_SPECULAR
-    // Rain sheen: one Blinn lobe on the existing sun/view pair. smoothstep is
-    // exactly zero at rainStrength 0.05 and below, and the branch is uniform
-    // per frame, so dry weather pays nothing and stays bit-identical. The ndl
-    // mask keeps the sheen on faces the directional light actually reaches, and the
-    // shadow factor keeps it out of shade (a sheen needs the sun); it
-    // is a surface reflection, so it is added after the albedo product.
-    float wetness = smoothstep(0.05, 0.70, rainStrength);
-    if (wetness > 0.0) {
-        // Wet surfaces read darker and richer first (water fills the
-        // micro-surface), only outdoors where rain lands. In game the old
-        // 0.50 sheen alone frosted every up-facing leaf and grass top mint.
-        color *= 1.0 - 0.18 * wetness * skyLight;
-        // Surface-to-eye is -viewDir, so the Blinn half vector is L + V.
-        vec3 halfDir = normalize(lightDir - viewDir);
-        float lobe = max(dot(normal, halfDir), 0.0);
-        lobe *= lobe;
-        lobe *= lobe;
-        lobe *= lobe;
-        color += vec3(0.70, 0.78, 0.92)
-            * (wetness * sunUp * skyLight * ndl * shadow * lobe * 0.10);
+    // Seen from under water, a surface is lit through the water above it.
+    // Every water block dims sky light by one level, so the level gives the
+    // depth away. Sun and moon lose red first along their slant path; the
+    // sky fill, already dimmed by the lower level, takes only the colour.
+    // The path back to the camera is the underwater fog's job.
+    vec3 directThrough = vec3(1.0);
+    vec3 skyTint = vec3(1.0);
+#ifdef AURELIA_WATER_UNDERWATER
+    if (isEyeInWater == 1) {
+        float depth = 15.0 * (1.0 - skyLevel);
+        vec3 extinction = AURELIA_WATER_ABSORPTION + AURELIA_WATER_SCATTERING;
+        directThrough = exp(-extinction * (depth / max(abs(sunDir.y), 0.3)));
+        vec3 column = exp(-extinction * depth);
+        skyTint = column / max(column.b, max(column.g, column.r));
     }
 #endif
 
+    vec3 color = vec3(0.0);
+    if (!aureliaNoSky()) {
+        vec3 sunLight = aureliaSunLight() * directThrough * (shadowTerms.x * openSky * AURELIA_DIRECT_LIGHT);
+        vec3 moonLight = aureliaMoonLight() * directThrough * (shadowTerms.y * openSky);
+        color += aureliaDirect(albedo, n, v, sunDir, sunLight, m, f0, alpha, NdotV);
+        color += aureliaDirect(albedo, n, v, moonDir, moonLight, m, f0, alpha, NdotV);
+    }
+
+    // Indirect: sky dome, block light and the floor, through the vertex AO.
+    vec3 envSpecular = aureliaEnvBrdf(f0, NdotV, roughness);
+    vec3 diffuseWeight = albedo * ((1.0 - m.metal) / AURELIA_PI) * (1.0 - envSpecular);
+    vec3 skyIrradiance = aureliaNoSky() ? vec3(0.0) : aureliaSkyAmbient(n, sunDir) * (skyVisibility * skyTint);
+    vec3 indirect = skyIrradiance * (AURELIA_SKY_FILL + 0.4 * m.translucency)
+                  + aureliaBlockLight(lightLevel.x)
+                  + vec3(AURELIA_MIN_LIGHT * (AURELIA_NIGHT_LIFT / 0.16));
+    if (aureliaNoSky()) indirect += aureliaNoSkyAmbient() * 1.5;
+    color += diffuseWeight * indirect * ao;
+
+    // Sky reflection. Rough lobes see an average of the dome, so they fade to
+    // the irradiance; the sky light level squared stands in for occlusion of
+    // the reflected ray indoors. deferred.fsh swaps in SSR where it hits.
+    if (!aureliaNoSky()) {
+        vec3 r = reflect(-v, n);
+        r.y = max(r.y, -0.2);
+        vec3 reflected = mix(aureliaSkyRadiance(r, sunDir) * skyTint, skyIrradiance / AURELIA_PI, roughness);
+        color += envSpecular * reflected * (skyVisibility * skyVisibility * mix(ao, 1.0, m.smoothness));
+    }
+
+    color += albedo * m.emission;
     return color;
 }
 
-// The curve lives in lib/look.glsl; the direction-aware fog application lives
-// beside the shared sky palette in lib/sky.glsl. Every pass uses this contract.
-// Takes the camera-relative PLAYER-space position (world axes): the fog palette
-// compares its direction with world-space sun and zenith vectors.
-vec3 aureliaApplyFog(vec3 color, vec3 playerPosition) {
-    return aureliaApplyFogContract(color, playerPosition, AURELIA_FOG_DENSITY, rainStrength);
+// Entities, hands and anything else without a block ID: the default rough
+// dielectric, full AO.
+vec3 aureliaForwardLight(vec3 albedo, vec3 worldNormal, vec2 lightLevel, vec3 playerPosition) {
+    float shadow;
+    return aureliaShade(albedo, normalize(worldNormal), lightLevel, playerPosition, aureliaDefaultMaterial(), 1.0, shadow);
 }
+
+// Fog is not applied here: the vertex stages evaluate the shared aerial
+// perspective (lib/sky.glsl, aureliaFogTerms) per vertex from the camera-
+// relative PLAYER-space position, and the fragment stages apply it with
+// aureliaApplyFogTerms.

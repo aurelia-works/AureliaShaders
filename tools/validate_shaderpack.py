@@ -309,6 +309,27 @@ def validate_iris_shadow_directives(shaders_root: Path) -> None:
         )
 
 
+def validate_gbuffers_samplers(shaders_root: Path) -> None:
+    """Reject gbuffers/shadow reads of colortex0-3, which Iris 1.7.x never binds there.
+
+    IrisSamplers.addRenderTargetSamplers starts at colortex4 outside fullscreen
+    passes, so such a sampler silently reads texture unit 0 (the block atlas).
+    """
+    legacy = {"gcolor": 0, "gdepth": 1, "gnormal": 2, "composite": 3}
+    for source in sorted(shaders_root.glob("*.[fv]sh")):
+        if not (source.stem.startswith("gbuffers_") or source.stem.startswith("shadow")):
+            continue
+        text = strip_comments(expand(source, shaders_root))
+        for name in re.findall(r"\buniform\s+\w*sampler\w*\s+(\w+)", text):
+            match = re.fullmatch(r"colortex([0-9]+)", name)
+            index = int(match.group(1)) if match else legacy.get(name)
+            if index is not None and index < 4:
+                raise ValueError(
+                    f"{source.name} samples {name}: Iris binds only colortex4+ in "
+                    "gbuffers/shadow programs (it would read the block atlas)"
+                )
+
+
 def strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     return re.sub(r"//[^\n]*", "", text)
@@ -338,6 +359,20 @@ def validate_exposed_options_are_used(shaders_root: Path, options: PackOptions) 
         option_uses.update(re.findall(r"\b(AURELIA_[A-Z0-9_]+)\b", define_line.sub("", text)))
         plain_tests.update(re.findall(r"^\s*#\s*ifn?def\s+(AURELIA_[A-Z0-9_]+)\b", text, re.MULTILINE))
 
+    # Iris preprocesses shaders.properties and block.properties with the option
+    # values, so an option tested by a directive there (shadowEntities under
+    # AURELIA_SHADOW_CASTERS, layer.solid under AURELIA_OPAQUE_ICE) is in use
+    # even when no program reads it.
+    for name in ("shaders.properties", "block.properties"):
+        path = shaders_root / name
+        if not path.is_file():
+            continue
+        directives = re.findall(r"^\s*#\s*(?:if|elif|ifdef|ifndef)\b[^\n]*",
+                                path.read_text(encoding="utf-8"), re.MULTILINE)
+        for directive in directives:
+            option_uses.update(re.findall(r"\b(AURELIA_[A-Z0-9_]+)\b", directive))
+            plain_tests.update(re.findall(r"^\s*#\s*ifn?def\s+(AURELIA_[A-Z0-9_]+)\b", directive))
+
     unused = sorted(name for name in declared if name not in readable)
     if unused:
         raise ValueError(
@@ -362,27 +397,55 @@ def validate_exposed_options_are_used(shaders_root: Path, options: PackOptions) 
         )
 
 
-def validate_varying_interfaces(shaders_root: Path) -> None:
+def preprocess(validator: str, workdir: Path, label: str, stage: str, text: str) -> str:
+    """The stage's source after the GLSL preprocessor (glslangValidator -E)."""
+    path = workdir / f"{label}.{stage}"
+    path.write_text(text, encoding="utf-8")
+    result = subprocess.run([validator, "-E", "-S", stage, str(path)], text=True, capture_output=True)
+    if result.returncode:
+        sys.stderr.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        raise RuntimeError(f"GLSL preprocessing failed: {label}.{stage}")
+    return result.stdout
+
+
+def validate_varying_interfaces(validator: str, shaders_root: Path, options: PackOptions) -> None:
     """Reject a half-applied change to a program pair.
 
     A vertex output that no fragment stage declares as an input is dead code, and
     it is the signature of a change that was applied to only one stage of a pair:
     the program still compiles, still links, still validates, and simply ignores
     the value. That is exactly what shipped once, so it is now a hard failure.
+
+    Both stages are run through the preprocessor first, under the defaults and
+    every preset, so interface blocks a shared library declares only for
+    programs that opt in (`#if defined(AURELIA_SKY_FRAME_VERTEX)`) are judged by
+    what each program actually compiles, not by text it never enables.
     """
-    for vertex_source in sorted(shaders_root.glob("*.vsh")):
-        program = vertex_source.stem
-        fragment_source = shaders_root / f"{program}.fsh"
-        if not fragment_source.is_file():
-            continue
-        produced = set(_VERTEX_OUT_RE.findall(expand(vertex_source, shaders_root)))
-        consumed = set(_FRAGMENT_IN_RE.findall(expand(fragment_source, shaders_root)))
-        orphans = sorted(produced - consumed)
-        if orphans:
-            raise ValueError(
-                f"{program}: vertex stage outputs {', '.join(orphans)} but the fragment stage never "
-                f"reads it; a change was applied to only one stage of the pair"
-            )
+    combos = [({}, set(), set())]
+    for assignments in read_profiles(shaders_root).values():
+        overrides, undefined, enabled = apply_profile(options, assignments)
+        combos.append((overrides, set(undefined), set(enabled)))
+    with tempfile.TemporaryDirectory(prefix="aurelia-varyings-") as temporary_dir:
+        workdir = Path(temporary_dir)
+        for vertex_source in sorted(shaders_root.glob("*.vsh")):
+            program = vertex_source.stem
+            fragment_source = shaders_root / f"{program}.fsh"
+            if not fragment_source.is_file():
+                continue
+            vertex_text = expand(vertex_source, shaders_root)
+            fragment_text = expand(fragment_source, shaders_root)
+            for overrides, undefined, enabled in combos:
+                produced = set(_VERTEX_OUT_RE.findall(preprocess(
+                    validator, workdir, program, "vert", apply_defines(vertex_text, overrides, undefined, enabled))))
+                consumed = set(_FRAGMENT_IN_RE.findall(preprocess(
+                    validator, workdir, program, "frag", apply_defines(fragment_text, overrides, undefined, enabled))))
+                orphans = sorted(produced - consumed)
+                if orphans:
+                    raise ValueError(
+                        f"{program}: vertex stage outputs {', '.join(orphans)} but the fragment stage never "
+                        f"reads it; a change was applied to only one stage of the pair"
+                    )
 
 
 @dataclass(frozen=True)
@@ -547,8 +610,9 @@ def main() -> int:
     shaders_root = root / "shaders"
     options = validate_settings(shaders_root)
     validate_iris_shadow_directives(shaders_root)
+    validate_gbuffers_samplers(shaders_root)
     validate_exposed_options_are_used(shaders_root, options)
-    validate_varying_interfaces(shaders_root)
+    validate_varying_interfaces(validator, shaders_root, options)
     overrides: dict[str, str] = {}
     for item in args.define:
         if "=" not in item:

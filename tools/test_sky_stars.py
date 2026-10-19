@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from preview import camera_for, presets
 from preview_render import PreviewRenderer, Sky
+from OpenGL.GL import GL_DEPTH_COMPONENT, GL_FLOAT, GL_TEXTURE_2D, glBindTexture, glGetTexImage
 from preview_scene import load_scene
 
 SHADERS_ROOT = (Path(__file__).parent.parent / "shaders").resolve()
@@ -79,21 +80,28 @@ def point_contrast(renderer: PreviewRenderer, atlas: np.ndarray, batches: dict,
                    time: float) -> float:
     image, _ = renderer.render(batches, atlas, camera_for("nightsky"),
                                Sky(time=time, rain=0.0))
-    top_rgb = image[: image.shape[0] // 2, :, :3].astype(np.float32)
     top = luma(image)[: image.shape[0] // 2, :]
     hp = top - median_filter(top)
-    # Exclude foliage. A seed-3 tree reaches into the window, and its sharp
-    # leaf edges read as "points" to a high-pass; brighter in-game-tuned
-    # sunlight raised that edge contrast past the daylight ceiling with no
-    # star anywhere. Foliage = green-dominant pixels, grown by the median
-    # radius so leaf boundaries go too. Stars (near-white) and the blue/navy
-    # sky both stay in.
-    foliage = (top_rgb[..., 1] > top_rgb[..., 2] + 4.0) & (top_rgb[..., 1] > top_rgb[..., 0])
-    grown = foliage.copy()
+    # Search open sky only. A seed-3 tree reaches into the window, and its
+    # sharp leaf edges read as "points" to a high-pass. Phase 5's Purkinje
+    # shift greys foliage at dusk, which defeated the old green-dominance
+    # mask (leaf edges counted as ~1000 dusk "stars"), so the mask now comes
+    # from geometry: pixels where the depth buffer holds no terrain, shrunk
+    # by the median radius so terrain silhouettes go too.
+    h, w = image.shape[:2]
+    glBindTexture(GL_TEXTURE_2D, renderer.scene_depth)
+    depth = np.frombuffer(glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT),
+                          np.float32).reshape(h, w)[::-1][: h // 2, :]
+    terrain = depth < 1.0
+    grown = terrain.copy()
     r = 3
     for dy in range(-r, r + 1):
         for dx in range(-r, r + 1):
-            grown |= np.roll(np.roll(foliage, dy, axis=0), dx, axis=1)
+            grown |= np.roll(np.roll(terrain, dy, axis=0), dx, axis=1)
+    # The window's own border: edge padding makes the median wrong there, and
+    # a sharp cloud edge crossing it read as daylight "points" (row 269).
+    grown[:r, :] = grown[-r:, :] = True
+    grown[:, :r] = grown[:, -r:] = True
     eroded = ~grown
     return float(np.count_nonzero(hp[eroded] > 0.02))
 

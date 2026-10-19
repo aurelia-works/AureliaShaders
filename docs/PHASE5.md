@@ -88,7 +88,7 @@ rain, more pixels are glossy and `deferred` rises from 2.0 to about 3.0 ms.
 The roughness mip chain measured no cost (rain, deferred 3.0-3.1 ms with it,
 3.2-3.4 without).
 
-## Not verified
+## Not verified (before the in-game run below)
 
 Everything above is the offline preview, which emulates Iris but is not
 Iris. Still to check in game: frame rate under Aurelia Metropolis, Iris's
@@ -108,3 +108,33 @@ passes.
 5. Night: dark but readable, stars, lamp light, blue-shifted shadows.
 6. Swim under water and look up: Snell's window, no seams.
 7. F3 frame time in a busy district for two minutes after warm-up.
+
+## In-game results (2026-10-19, ClaudeShader, Iris 1.7.6, M1, 1080p, RD 8)
+
+Pass after fixes: noon town and lake, sunset, rain, night, underwater, Nether,
+End. `colortex0MipmapEnabled` works in `deferred` (SSR on water at sunset).
+Not covered: SSR on polished stone (the test world has no stone city).
+
+Fixes the run found:
+- Atlas tiles on water and sky: gbuffers read colortex2/3, which Iris does
+  not bind outside fullscreen passes. Moved to colortex6/5 (validator guard).
+- The End was lit like Overworld noon: `aureliaNoSky()` (`hasCeiling ||
+  !hasSkylight`) now gates sun, sky light, flare and god rays.
+- Nether lava tonemapped to cream: the no-sky exposure floor was EV -6.4
+  (17.6x gain). It is now EV -4.0, with Nether/End ambient and fog x5.28.
+- Rain: water and glass sun glints fade with (1 - rain)^2.
+- Potato: `program.deferred.enabled = false` when SSR, the cloud layer and
+  refraction are all off (the pass had nothing to do).
+
+Frame rate, town view (105 78 100), noon, clear, F3 samples after warm-up:
+
+| Setup | fps |
+|---|---|
+| Vanilla, shaders off | 180-193 |
+| Aurelia Potato | 67-79 |
+| Aurelia Low | 45-62 |
+| Aurelia Balanced | 39-46 |
+| Complementary Reimagined, Jah's low settings | 39-40 |
+
+No single Balanced feature costs more than ~8 fps here (shadows ~52, SSR off
+~50); with every feature off the pack runs 73-75.

@@ -37,7 +37,7 @@ void main() {
             weights += weight;
         }
     }
-    float target = clamp(sum / weights, AURELIA_EV_MIN, AURELIA_EV_MAX);
+    float target = clamp(sum / weights, aureliaEvMin(), AURELIA_EV_MAX);
     vec4 history = texelFetch(colortex4, ivec2(0), 0);
     float adapted = target;
     if (history.a > 0.5 && history.r == history.r) {

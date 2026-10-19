@@ -219,7 +219,7 @@ vec3 aureliaShade(vec3 albedo, vec3 n, vec2 lightLevel, vec3 playerPosition, Aur
 #endif
 
     vec3 color = vec3(0.0);
-    if (!hasCeiling) {
+    if (!aureliaNoSky()) {
         vec3 sunLight = aureliaSunLight() * directThrough * (shadowTerms.x * openSky * AURELIA_DIRECT_LIGHT);
         vec3 moonLight = aureliaMoonLight() * directThrough * (shadowTerms.y * openSky);
         color += aureliaDirect(albedo, n, v, sunDir, sunLight, m, f0, alpha, NdotV);
@@ -229,17 +229,17 @@ vec3 aureliaShade(vec3 albedo, vec3 n, vec2 lightLevel, vec3 playerPosition, Aur
     // Indirect: sky dome, block light and the floor, through the vertex AO.
     vec3 envSpecular = aureliaEnvBrdf(f0, NdotV, roughness);
     vec3 diffuseWeight = albedo * ((1.0 - m.metal) / AURELIA_PI) * (1.0 - envSpecular);
-    vec3 skyIrradiance = hasCeiling ? vec3(0.0) : aureliaSkyAmbient(n, sunDir) * (skyVisibility * skyTint);
+    vec3 skyIrradiance = aureliaNoSky() ? vec3(0.0) : aureliaSkyAmbient(n, sunDir) * (skyVisibility * skyTint);
     vec3 indirect = skyIrradiance * (AURELIA_SKY_FILL + 0.4 * m.translucency)
                   + aureliaBlockLight(lightLevel.x)
                   + vec3(AURELIA_MIN_LIGHT * (AURELIA_NIGHT_LIFT / 0.16));
-    if (hasCeiling) indirect += AURELIA_NETHER_AMBIENT * 1.5;
+    if (aureliaNoSky()) indirect += aureliaNoSkyAmbient() * 1.5;
     color += diffuseWeight * indirect * ao;
 
     // Sky reflection. Rough lobes see an average of the dome, so they fade to
     // the irradiance; the sky light level squared stands in for occlusion of
     // the reflected ray indoors. deferred.fsh swaps in SSR where it hits.
-    if (!hasCeiling) {
+    if (!aureliaNoSky()) {
         vec3 r = reflect(-v, n);
         r.y = max(r.y, -0.2);
         vec3 reflected = mix(aureliaSkyRadiance(r, sunDir) * skyTint, skyIrradiance / AURELIA_PI, roughness);

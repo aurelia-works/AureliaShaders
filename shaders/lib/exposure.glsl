@@ -7,8 +7,20 @@
 #define AURELIA_EXPOSURE_GLSL
 
 const float AURELIA_EV_MIN = -6.4;  // moonlit field: night stays night, not grey day
+// Nether and End: no night to keep dark, and at -6.4 the 17.6x gain blew
+// lava, glowstone and fire out to cream (seen in game; vanilla lava is
+// orange). Their ambient and fog in lib/look.glsl are scaled by the same
+// 2^(6.4 - 4.0) so unlit surfaces keep their brightness.
+const float AURELIA_EV_MIN_NO_SKY = -4.0;
 const float AURELIA_EV_MAX = 1.2;   // sunlit snow and sand
 const float AURELIA_EXPOSURE_KEY = 0.21; // the metered average lands a little over mid grey
+
+uniform bool hasCeiling;   // Nether
+uniform bool hasSkylight;  // false in the Nether and the End
+
+float aureliaEvMin() {
+    return (hasCeiling || !hasSkylight) ? AURELIA_EV_MIN_NO_SKY : AURELIA_EV_MIN;
+}
 
 #ifdef AURELIA_EXPOSURE_READ
 uniform sampler2D colortex4;
@@ -24,7 +36,7 @@ float aureliaExposure() {
     float ground = dot(sun * max(aureliaSunDirection().y, 0.0) + aureliaLutTexel(AURELIA_LUT_SKY_UP).rgb
                      + aureliaLutTexel(AURELIA_LUT_MOON).rgb * max(aureliaMoonDirection().y, 0.0),
                        vec3(0.2126, 0.7152, 0.0722)) * (0.25 / AURELIA_PI);
-    float ev = clamp(log2(max(ground, 1e-6)), AURELIA_EV_MIN, AURELIA_EV_MAX);
+    float ev = clamp(log2(max(ground, 1e-6)), aureliaEvMin(), AURELIA_EV_MAX);
 #endif
     return AURELIA_EXPOSURE_KEY * exp2(-ev);
 }

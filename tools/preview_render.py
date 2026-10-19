@@ -1022,6 +1022,11 @@ class PreviewRenderer:
             # declares and reads it only under AURELIA_WATER_UNDERWATER, so this
             # is a no-op everywhere else.
             "isEyeInWater": 1 if self.underwater_eye else 0,
+            # Iris dimension uniforms: the preview is the Overworld. Unset,
+            # hasSkylight would read false and every shot would take the
+            # End's no-sky path (lib/sky.glsl aureliaNoSky).
+            "hasCeiling": False,
+            "hasSkylight": True,
         }
 
     # -- frame ------------------------------------------------------------- #

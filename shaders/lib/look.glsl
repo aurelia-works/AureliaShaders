@@ -137,10 +137,14 @@ const float AURELIA_SUN_INTENSITY = 1.8;
 
 // Nether fill (hasCeiling): the dimension has no sky light, so without this
 // the only fill was the night floor and the Nether rendered near-black in game.
-const vec3 AURELIA_NETHER_AMBIENT = vec3(0.26, 0.15, 0.11);
+// Scaled by 5.28 = 2^(6.4 - 4.0) when the no-sky exposure floor rose from
+// EV -6.4 to -4.0 (lib/exposure.glsl), so walls kept their brightness.
+const vec3 AURELIA_NETHER_AMBIENT = vec3(0.26, 0.15, 0.11) * 5.28;
+// End fill (!hasSkylight, no ceiling): no sun or sky, a cool violet void light.
+const vec3 AURELIA_END_AMBIENT = vec3(0.20, 0.18, 0.26) * 5.28;
 // Phase 5 radiance of Nether fog and sky per unit of Minecraft's linear fog
 // colour, matched to walls lit by the Nether ambient above.
-const float AURELIA_NETHER_FOG_SCALE = 0.25;
+const float AURELIA_NETHER_FOG_SCALE = 0.25 * 5.28;
 
 // --- Ambient / sky colours (linear) -----------------------------------------
 

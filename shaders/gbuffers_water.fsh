@@ -125,8 +125,8 @@ void main() {
     vec3 sunDirection = aureliaSunDirection();
     vec3 moonDirection = aureliaMoonDirection();
     float skyLevel = clamp(lmcoord.y, 0.0, 1.0);
-    float skyVisibility = hasCeiling ? 0.0 : aureliaSkyVisibility(skyLevel);
-    float openSky = hasCeiling ? 0.0 : smoothstep(0.30, 0.85, skyLevel);
+    float skyVisibility = aureliaNoSky() ? 0.0 : aureliaSkyVisibility(skyLevel);
+    float openSky = aureliaNoSky() ? 0.0 : smoothstep(0.30, 0.85, skyLevel);
     vec4 fog = aureliaFogTerms(playerPosition, AURELIA_FOG_DENSITY, rainStrength);
 
     vec3 color;
@@ -196,11 +196,15 @@ void main() {
             // their slopes widen the lobe into a glitter path.
             float glintAlpha = 0.02 + 0.06 * smoothstep(16.0, 96.0, distanceToCamera);
             vec3 glint = vec3(0.0);
-            if (!hasCeiling) {
+            if (!aureliaNoSky()) {
                 glint = aureliaLightSpecular(n, v, sunDirection, glintAlpha, vec3(AURELIA_WATER_F0))
                           * aureliaSunLight() * (shadow.x * openSky)
                       + aureliaLightSpecular(n, v, moonDirection, glintAlpha, vec3(AURELIA_WATER_F0))
                           * aureliaMoonLight() * (shadow.y * openSky);
+                // Overcast hides the disc: the LUT keeps 6% of the sun as
+                // diffuse light, but through this near-mirror lobe that still
+                // showed as a white sparkle on rain-rippled water (in game).
+                glint *= (1.0 - rainStrength) * (1.0 - rainStrength);
             }
 
             // The water column behind the surface.
@@ -280,9 +284,9 @@ void main() {
             vec4 traced = aureliaTraceReflection(r);
             reflection = mix(reflection, traced.rgb, traced.a);
         }
-        vec3 glint = hasCeiling ? vec3(0.0)
+        vec3 glint = aureliaNoSky() ? vec3(0.0)
                    : aureliaLightSpecular(face, v, sunDirection, max(specAlpha, 0.02), vec3(material.f0))
-                       * aureliaSunLight() * (sunShadow * openSky);
+                       * aureliaSunLight() * (sunShadow * openSky * (1.0 - rainStrength) * (1.0 - rainStrength));
 
         alpha = mix(texel.a, 1.0, fresnel);
         vec3 premultiplied = lit * (texel.a * (1.0 - fresnel)) + fresnel * reflection + glint;

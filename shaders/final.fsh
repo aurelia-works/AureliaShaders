@@ -17,9 +17,8 @@ uniform float aureliaAdaptiveShadowFilterSamples;
 
 uniform sampler2D depthtex0;
 // Nether: no sky geometry is drawn, so open space kept the black colortex0
-// clear (seen in game). Read only inside the hasCeiling branch below, so the
-// Overworld pays no fetch.
-uniform bool hasCeiling;
+// clear (seen in game). Read only inside the hasCeiling branch below
+// (hasCeiling is declared by lib/exposure.glsl), so the Overworld pays no fetch.
 
 #ifdef AURELIA_DISTANT_RAIN
 uniform mat4 gbufferProjectionInverse;

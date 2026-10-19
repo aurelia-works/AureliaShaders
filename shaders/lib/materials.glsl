@@ -54,7 +54,9 @@ AureliaMaterial aureliaMaterial(int id, vec3 albedo) {
         // Lamp blocks: the bright texels are the bulb.
         m.emission = 3.2 * smoothstep(0.30, 0.85, luma); m.smoothness = 0.45; m.porosity = 0.0;
     } else if (id == 10021) {
-        m.emission = 2.6 * (0.35 + 0.65 * smoothstep(0.2, 0.9, luma)); m.porosity = 0.0;
+        // Lava: on top of full block light; at 2.6 it tonemapped to pale peach
+        // in the Nether (seen in game against vanilla orange).
+        m.emission = 0.5 * (0.35 + 0.65 * smoothstep(0.2, 0.9, luma)); m.porosity = 0.0;
     } else if (id == 10022) {
         // Torches, lanterns, campfires: only the flame and the glass glow.
         float hot = smoothstep(0.55, 0.90, luma) * step(albedo.b, albedo.r + 0.05);

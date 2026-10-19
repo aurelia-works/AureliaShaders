@@ -48,6 +48,7 @@ def main() -> int:
     def patched(camera, sky, adaptive):
         uniforms = original(camera, sky, adaptive)
         uniforms["hasCeiling"] = nether["on"]
+        uniforms["hasSkylight"] = not nether["on"]
         # Constant Minecraft colours so only the palette logic can vary.
         uniforms["fogColor"] = np.array([0.20, 0.05, 0.03], np.float32)
         uniforms["skyColor"] = np.array([0.20, 0.05, 0.03], np.float32)

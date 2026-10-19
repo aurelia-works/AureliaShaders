@@ -5,7 +5,7 @@
 // stays revertible from the Iris options screen without a code edit.
 //
 // Included after lib/look.glsl, so the contract helpers and constants are in
-// scope. Uniforms declared here: hasCeiling (always) and isEyeInWater (only
+// scope. Uniforms declared here: hasCeiling and hasSkylight (always) and isEyeInWater (only
 // under AURELIA_WATER_UNDERWATER).
 //
 // The sun and moon are drawn analytically (soft limb, layered aureole) in place
@@ -21,9 +21,24 @@
 // change Overworld behaviour. The Nether has no sun-driven atmosphere: its sun
 // sits fixed below the horizon, so the day/night palette would fog everything
 // to the night navy instead of Minecraft's own Nether fogColor. Both palette
-// entry points below return the fog colour directly in that case. (The End has
-// no uniform with a safe polarity and keeps the day palette.)
+// entry points below return the fog colour directly in that case.
 uniform bool hasCeiling;
+// Iris: false in the Nether and the End. The End has no sun-driven atmosphere
+// either; on the day palette its islands lit and hazed like Overworld noon
+// (seen in game: white-blue island, untextured pillars). Unlike hasCeiling an
+// unsupported uniform would read as the no-sky path, so this relies on Iris
+// 1.7.6 providing it (it does: DimensionUniforms).
+uniform bool hasSkylight;
+
+// No sun-driven atmosphere: the Nether (ceiling) or the End (no sky light).
+bool aureliaNoSky() {
+    return hasCeiling || !hasSkylight;
+}
+
+// Fill light of a no-sky dimension: warm Nether embers or cool End void.
+vec3 aureliaNoSkyAmbient() {
+    return hasCeiling ? AURELIA_NETHER_AMBIENT : AURELIA_END_AMBIENT;
+}
 
 // Under AURELIA_WATER_UNDERWATER the underwater atmosphere needs the camera's
 // submersion state. Iris exposes isEyeInWater as an int: 1 = water, 2 = lava,
@@ -210,7 +225,7 @@ vec3 aureliaSkyDome(
     vec3 lightDirection,
     float rain
 ) {
-    if (hasCeiling) {
+    if (aureliaNoSky()) {
         return fogColorLinear;
     }
     AureliaSkyFrame frame = aureliaSkyFrame(skyColorLinear, fogColorLinear, lightDirection, rain);
@@ -237,7 +252,7 @@ vec3 aureliaSkyDome(
 // tight halo only matters within a couple of degrees of the disc, where fogged
 // geometry rarely sits.
 vec3 aureliaFogColor(vec3 skyColorLinear, vec3 fogColorLinear, vec3 direction, vec3 lightDirection, float rain) {
-    if (hasCeiling) {
+    if (aureliaNoSky()) {
         return fogColorLinear;
     }
     AureliaSkyFrame frame = aureliaSkyFrame(skyColorLinear, fogColorLinear, lightDirection, rain);
@@ -334,7 +349,7 @@ vec3 aureliaAtmosphereSky(
 // column reads brighter than looking down it, the cheapest honest depth cue.
 #ifdef AURELIA_WATER_UNDERWATER
 vec3 aureliaUnderwaterColor(vec3 direction, float rain) {
-    vec3 downwelling = hasCeiling ? vec3(AURELIA_NETHER_AMBIENT) : aureliaWaterDownwelling(1.0, 1.0, 1.0);
+    vec3 downwelling = aureliaNoSky() ? aureliaNoSkyAmbient() : aureliaWaterDownwelling(1.0, 1.0, 1.0);
     return aureliaWaterColumnRadiance(direction, downwelling);
 }
 #endif
@@ -369,9 +384,10 @@ vec4 aureliaFogTerms(vec3 playerPosition, float density, float rain) {
         return vec4(aureliaUnderwaterColor(direction, rain) * underwater, 1.0 - underwater);
     }
 #endif
-    if (hasCeiling) {
-        // Nether air is thick and lit by its own fog colour; no sky.
-        float fog = aureliaFogFactor(distanceToCamera, density * 3.0, rain);
+    if (aureliaNoSky()) {
+        // Nether air is thick and lit by its own fog colour; End air is
+        // thinner (its far islands stay visible, as in vanilla). No sky.
+        float fog = aureliaFogFactor(distanceToCamera, density * (hasCeiling ? 3.0 : 1.0), rain);
         return vec4(aureliaFogColorLinear() * (AURELIA_NETHER_FOG_SCALE * fog), 1.0 - fog);
     }
     // Aerial perspective. Haze extinction per block at sea level, far

@@ -70,7 +70,7 @@ void main() {
     float smoothness = gbuffer.b;
     float depth = texelFetch(depthtex0, pixel, 0).r;
     // Hand pixels (depth < 0.56) and anything rough keep the forward result.
-    if (smoothness > 0.42 && depth < 1.0 && depth > 0.56 && !hasCeiling) {
+    if (smoothness > 0.42 && depth < 1.0 && depth > 0.56 && !aureliaNoSky()) {
         float flags = floor(gbuffer.a * 255.0 + 0.5);
         float skyLevel = floor(flags / 16.0) / 15.0;
         bool metal = mod(flags, 16.0) >= 8.0;

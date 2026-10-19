@@ -28,6 +28,7 @@ flat out vec3 aureliaFlareSun; // xy: sun position in screen uv, z: flare streng
 flat out float aureliaRaysSun;  // god-ray strength: sun in front, up, clear sky
 flat out vec3 aureliaSunTint;   // scattered share of the sun's light for this frame
 uniform bool hasCeiling;        // Nether: the sun still moves, behind the roof
+uniform bool hasSkylight;       // false in the End (and Nether): no sun to flare
 
 void aureliaWriteSunEffects() {
     aureliaFlareSun = vec3(0.0);
@@ -36,7 +37,7 @@ void aureliaWriteSunEffects() {
     // scatter; the LUT already dims it for low sun, overcast and night.
     aureliaSunTint = aureliaSunLight() * 0.06;
     vec4 clip = gbufferProjection * vec4(sunPosition, 1.0);
-    if (clip.w <= 0.0 || hasCeiling) return; // behind the camera, or no open sky
+    if (clip.w <= 0.0 || hasCeiling || !hasSkylight) return; // behind the camera, or no open sky
     vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
     float day = smoothstep(0.0, 0.05, aureliaSunTint.g);
     float clear = 1.0 - rainStrength;

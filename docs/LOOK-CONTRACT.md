@@ -47,23 +47,22 @@ byte-identical — see the P3.0B report). Tuning begins in P3.1.
 
 ### Fog curve
 
+Since Phase 5 the Overworld fades through physical haze (Beer-Lambert
+extinction toward the sky LUT's horizon radiance; see "Aurelia LOD Look
+Contract" below). The curve remains for the Nether, called with
+`3 * density`:
+
 ```
 fog(d, density, rain) =
-    clamp( (1 - exp(-d * 0.0045 * density)) * (0.80 + 0.20 * rain), 0, 0.78 )
+    clamp( (1 - exp(-d * 0.0022 * density)) * (0.80 + 0.20 * rain), 0, 0.78 )
 ```
 
-Constants: `AURELIA_FOG_DENSITY_K = 0.0045`, `AURELIA_FOG_RAIN_MIN = 0.80`,
-`AURELIA_FOG_RAIN_RANGE = 0.20`, `AURELIA_FOG_MAX = 0.78`. `density` is passed
-in by the caller (`AURELIA_FOG_DENSITY`, an Iris option), so `look.glsl` has no
-compile-time dependency on `options.glsl`. Reference values at `density = 1`,
-dry (`rain = 0`, multiplier `0.80`): `fog(10) ≈ 0.035`, `fog(30) ≈ 0.101`,
-`fog(60) ≈ 0.189`, `fog(100) ≈ 0.290`, `fog(128) ≈ 0.350`. Near-field stays
-crisp (under 5% inside ~15 blocks), mid-distance gains subtle atmosphere, and
-the RD8 far edge reads ~35% toward the horizon with terrain form intact. The
-cap is never approached at normal render distances (it binds past ~820 blocks
-dry at `density = 1`); it exists for far-plane/LOD geometry. Tuned in P4
-(ATMOSPHERE segment): `K` `0.0031 → 0.0045`, single-constant change, no curve,
-target, or signature change.
+Constants: `AURELIA_FOG_DENSITY_K = 0.0022` (was `0.0045` until the in-game
+tuning in `98a01d2`), `AURELIA_FOG_RAIN_MIN = 0.80`,
+`AURELIA_FOG_RAIN_RANGE = 0.20`, `AURELIA_FOG_MAX = 0.78`, plus border fog
+over the last 25% of render distance. `density` is passed in by the caller
+(`AURELIA_FOG_DENSITY`, an Iris option), so `look.glsl` has no compile-time
+dependency on `options.glsl`.
 
 ### Weather attenuation constants
 
@@ -107,7 +106,8 @@ must stay consistent with `look.glsl` when either side changes:
 
 - `AURELIA_NIGHT_LIFT`, `AURELIA_DIRECT_LIGHT` — used by the forward-light
   composition in `lib/lighting.glsl` (not by `look.glsl` itself).
-- `AURELIA_FOG_DENSITY` — the `density` argument to `aureliaFogFactor`.
+- `AURELIA_FOG_DENSITY` — the `density` argument to `aureliaFogTerms` (haze
+  extinction) and `aureliaFogFactor` (Nether).
 - `AURELIA_SKY_SATURATION` — applied in `lib/tonemap.glsl`, after the contract's
   linear stage.
 
@@ -126,53 +126,46 @@ All steps run in **linear RGB**; sRGB decode of the Iris inputs happens first
    Euclidean camera distance in blocks. The pack evaluates
    `length(viewPosition)` where `viewPosition` is already camera-relative, so
    this is identical.
-2. **Fog factor** (`aureliaFogFactor`, `lib/look.glsl`):
-   `f = clamp((1 - exp(-d * 0.0045 * density)) * (0.80 + 0.20 * rain), 0, 0.78)`.
-   `rain` is Iris `rainStrength` in `[0, 1]`. `density` mirrors the user's
-   `AURELIA_FOG_DENSITY` Iris option (profile defaults: POTATO `0.85`, LOW
-   `0.90`, BALANCED/ADAPTIVE `1.00`, CINEMATIC `1.20`); the LOD default is
-   `1.00`.
-3. **Fog color** (`aureliaFogColor`, `lib/sky.glsl`): the analytic sky dome
-   palette evaluated **along the fragment direction**
-   `dir = normalize(fragmentWorldPos - cameraWorldPos)` (player/world space),
-   **minus the solar aureole** (no sun disc, no glow lobes — those live within
-   a couple of degrees of the disc, where fogged geometry rarely sits):
-   - Day/night blend: `day = smoothstep(-0.10, 0.08, sunHeight)`, where
-     `sunHeight` is the world-space sun direction's `.y`
-     (`normalize(mat3(gbufferModelViewInverse) * sunPosition).y`).
-   - `zenith = mix((0.011, 0.019, 0.045), (0.070, 0.160, 0.430), day)`,
-     then `zenith = mix(zenith, skyColorLinear * 0.55, 0.20 * day)`.
-   - `horizon = mix((0.030, 0.047, 0.088), fogColorLinear, day)`.
-   - Golden-hour bell: `golden = smoothstep(-0.12, 0.02, sunH) *
-     (1 - smoothstep(0.06, 0.30, sunH))`, `sunH = max(sunHeight, 0)`.
-     Azimuth gate: `nearSun = smoothstep(0.05, 0.85, azimuthAlign)` where
-     `azimuthAlign` is the cosine between the `xz` projections of `dir` and
-     the sun direction (0 when either projection is degenerate).
-     `horizon = mix(horizon, (0.30, 0.42, 0.62), 0.45 * golden)`, then
-     `horizon = mix(horizon, sunColor(sunH) * 0.90, 0.80 * golden * nearSun)`
-     with `sunColor(h) = mix((1.00, 0.97, 0.91), (1.00, 0.57, 0.31),
-     1 - smoothstep(0.05, 0.48, h))`.
-   - `ramp = smoothstep(-0.28, 0.62, dir.y)`;
-     `sky = mix(horizon, zenith, ramp)`.
-   - Overcast: `overcast = mix((0.34, 0.38, 0.44), (0.16, 0.20, 0.27), ramp)`,
-     then `overcast *= mix(0.14, 1.0, day)` — the overcast pair is a daylight
-     palette, so it is dimmed by the same day/night blend as the dome; without
-     this a rainy night renders far brighter than a clear night instead of
-     staying navy;
-     `fogColor = mix(sky, overcast, 0.45 * rain)`.
-   `skyColorLinear` / `fogColorLinear` are the linear decodes of Iris's
-   `skyColor` / `fogColor` uniforms; `lightDirection` is the world-space sun
-   direction above. Night fog is the dome's navy, never black; rain fog is the
-   same overcast the sky shows.
-4. **Composite.** `out = mix(litLinear, fogColor, f)` in linear, before the
-   pack's tonemap. Because the fog target equals the dome color behind the
-   fragment at the horizon, distant terrain converges to the sky seam-free by
-   construction.
-5. **Cap behavior.** `f` clamps at `0.78`, so even far-plane geometry keeps
-   ~22% of its own signal: atmosphere, never soup. Underwater uses a separate
-   denser curve (`AURELIA_UNDERWATER_FOG_K = 0.070`, cap `0.86`, gated on
-   `AURELIA_WATER_UNDERWATER` + `isEyeInWater == 1`); the LOD's above-water
-   path ignores it.
+2. **Extinction** (Overworld, `aureliaFogTerms`, `lib/sky.glsl`). Since
+   Phase 5 the haze is a Beer-Lambert medium, not a fog curve:
+   `sigma = 0.0016 * density * (1 + 1.8 * rain)` per block
+   (`AURELIA_HAZE_EXTINCTION`, `lib/look.glsl`; far denser than clean air, or
+   a block world would show no depth within a render distance), and
+   `T = exp(-sigma * d)`. `rain` is Iris `rainStrength` in `[0, 1]`.
+   `density` mirrors the `AURELIA_FOG_DENSITY` option (profile defaults:
+   POTATO `0.85`, LOW `0.90`, BALANCED/ADAPTIVE `1.00`, CINEMATIC `1.20`);
+   the LOD default is `1.00`.
+3. **Height** (`AURELIA_FOG_HAZE`, every profile but Potato). The haze
+   thins exponentially above `y = 63` with a 90-block scale height, and the
+   optical depth along the ray integrates that profile exactly:
+   `h0 = cameraY - 63`, `k = (fragmentY - cameraY) / 90`,
+   `base = exp(-max(h0, -40) / 90)`,
+   `profile = |k| > 1e-3 ? base * (1 - exp(-k)) / k : base`, and
+   `sigma *= clamp(profile, 0.08, 1.6)`.
+4. **In-scatter colour.** The haze glows with the sky just above the
+   horizon: the sky-view LUT radiance (`aureliaSkyRadianceAtAngle`,
+   `lib/atmosphere.glsl`) at height `y = 0.04 + 0.5 * max(dir.y, 0)` and at
+   the azimuth whose angle from the sun is the fragment's own,
+   `cosAzimuth = (dot(dir, sun) - y * sun.y) / (sqrt(1 - y*y) * |sun.xz|)`.
+   Keeping the true scattering angle matters at golden hour: flattening a
+   fragment below a low sun onto the horizon at its own azimuth would put it
+   in the Mie aureole's peak. The LUT is single scattering through Rayleigh,
+   Mie and ozone (`lib/atmosphere.glsl`, a pure function of the sun
+   direction and rain), so an LOD renderer reproduces it by evaluating the
+   same model, not by sampling this pack's buffers.
+5. **Composite.** With `border = smoothstep(0.78 * far, far, d)` and
+   `behind` the LUT radiance along `dir` itself,
+   `out = lit * T * (1 - border) + mix(haze * (1 - T), behind, border)`, in
+   linear, before exposure and the film curve. The world's edge therefore
+   resolves into the sky behind it, seam-free by construction.
+6. **Other media.** The Nether keeps the curve form,
+   `f = clamp((1 - exp(-d * 0.0022 * 3 * density)) * (0.80 + 0.20 * rain), 0, 0.78)`
+   plus border fog over the last 25% of render distance (`aureliaFogFactor`),
+   toward its own fog colour. Underwater
+   (`AURELIA_WATER_UNDERWATER`, `isEyeInWater == 1`) uses a denser curve
+   (`AURELIA_UNDERWATER_FOG_K = 0.070`, cap `0.86`) toward the water
+   column's radiance (`lib/water.glsl`). The LOD's above-water path ignores
+   both.
 
 ## What intentionally stayed where it was
 
@@ -187,11 +180,12 @@ would risk evaluation-order, precision, include-order, or preset behaviour:
   deliberately avoided there (it is included by `lighting.glsl` immediately
   after `look.glsl`, so the constants are already in scope); a second include
   would re-declare `look.glsl`'s uniforms and helpers.
-- **Fog application** (`aureliaApplyFogContract`, `lib/sky.glsl`): lives next
-  to the dome palette it fades toward (direction-aware, with the underwater
-  branch under `AURELIA_WATER_UNDERWATER`); only the distance/density curve
-  (`aureliaFogFactor`) stays in `lib/look.glsl`. `lib/lighting.glsl` keeps the
-  two-argument `aureliaApplyFog` wrapper for its callers.
+- **Fog application** (`aureliaFogTerms`, `lib/sky.glsl`): lives next to the
+  sky it fades toward (direction-aware, with the underwater branch under
+  `AURELIA_WATER_UNDERWATER`); the haze constants and the Nether curve
+  (`aureliaFogFactor`) stay in `lib/look.glsl`. Terrain, entities and
+  textured geometry evaluate it per vertex and apply it with
+  `aureliaApplyFogTerms`; water, glass and SSR hits evaluate it per pixel.
 - **The sky ramp shape, glow geometry and `lowSun` curve**
   (`gbuffers_skybasic.fsh`): P3.1 tuning surface, not contract.
 - **Block-light and torch constants** (`lib/lighting.glsl`): presentation,

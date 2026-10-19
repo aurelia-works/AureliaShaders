@@ -60,8 +60,13 @@ def main() -> int:
     if "shadowTerms.y" not in light:
         failures.append("moonlight must be multiplied by its shadow term")
 
-    for name in ("gbuffers_terrain", "gbuffers_entities", "gbuffers_textured_lit"):
-        v = read(name + ".vsh")
+    sys.path.insert(0, str(ROOT.parent / "tools"))
+    from validate_shaderpack import expand
+
+    # Expanded, so a vertex stage that lives in a shared include (terrain and
+    # terrain_solid share lib/terrain_vertex.glsl) is checked as compiled.
+    for name in ("gbuffers_terrain", "gbuffers_terrain_solid", "gbuffers_entities", "gbuffers_textured_lit"):
+        v = expand(ROOT / (name + ".vsh"), ROOT)
         if "(lmcoord - 1.0 / 32.0) * (32.0 / 30.0)" not in v:
             failures.append(f"{name}.vsh lightmap decode is not (lm - 1/32) * 32/30")
 

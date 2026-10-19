@@ -67,6 +67,8 @@ class Batch:
     col: np.ndarray = field(default_factory=lambda: np.zeros((0, 4), np.float32))
     lm: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), np.float32))
     idx: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.uint32))
+    # Iris's mc_Entity.x per vertex: the block.properties ID, 0 for none.
+    ent: np.ndarray = field(default_factory=lambda: np.zeros((0, 1), np.float32))
 
     @property
     def count(self) -> int:
@@ -87,7 +89,7 @@ class Batch:
 class _Builder:
     """Accumulates quads. Kept as plain lists; the batch count stays modest."""
 
-    __slots__ = ("pos", "nrm", "uv", "col", "lm", "idx", "count")
+    __slots__ = ("pos", "nrm", "uv", "col", "lm", "idx", "ent", "count")
 
     def __init__(self) -> None:
         self.pos: list[np.ndarray] = []
@@ -96,12 +98,14 @@ class _Builder:
         self.col: list[np.ndarray] = []
         self.lm: list[np.ndarray] = []
         self.idx: list[np.ndarray] = []
+        self.ent: list[np.ndarray] = []
         # Running vertex total. Recomputing it from len() of every part would
         # make a full world build quadratic.
         self.count = 0
 
-    def add(self, corners, normal, uvs, tint, ao, light) -> None:
+    def add(self, corners, normal, uvs, tint, ao, light, entity: float = 0.0) -> None:
         base = self.count
+        self.ent.append(np.full((4, 1), entity, np.float32))
         self.count += 4
         self.pos.append(np.asarray(corners, np.float32))
         self.nrm.append(np.tile(np.asarray(normal, np.float32), (4, 1)))
@@ -132,7 +136,45 @@ class _Builder:
             col=np.concatenate(self.col),
             lm=np.concatenate(self.lm),
             idx=np.concatenate(self.idx),
+            ent=np.concatenate(self.ent),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Block IDs, read from the pack's own block.properties
+# --------------------------------------------------------------------------- #
+
+_BLOCK_IDS: dict[str, int] | None = None
+
+
+def block_ids(shaders_root: Path | None = None) -> dict[str, int]:
+    """``block name -> ID`` as Iris would assign mc_Entity.x.
+
+    Parsed from ``shaders/block.properties`` so a scene can never drift from
+    the IDs the pack reads. Preprocessor lines are skipped (every option-gated
+    entry counts as present) and block-state suffixes are kept as written.
+    """
+    global _BLOCK_IDS
+    if _BLOCK_IDS is not None and shaders_root is None:
+        return _BLOCK_IDS
+    root = shaders_root or Path(__file__).resolve().parents[1] / "shaders"
+    text = (root / "block.properties").read_text(encoding="utf-8").replace("\\\n", " ")
+    ids: dict[str, int] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("block."):
+            continue
+        key, _, names = line.partition("=")
+        number = int(key.split(".")[1])
+        for name in names.split():
+            ids.setdefault(name.replace("minecraft:", "").split(":")[0], number)
+    _BLOCK_IDS = ids
+    return ids
+
+
+def block_id(name: str) -> float:
+    """The mc_Entity.x a block would carry; 0 when the pack gives it no ID."""
+    return float(block_ids().get(name, 0))
 
 
 # --------------------------------------------------------------------------- #
@@ -522,7 +564,7 @@ def _build_water_surface(world: World) -> Batch:
         (((lo, y, lo), (lo, y, hi), (hi, y, hi), (hi, y, lo)), (0.0, 1.0, 0.0)),
         (((lo, y, lo), (hi, y, lo), (hi, y, hi), (lo, y, hi)), (0.0, -1.0, 0.0)),
     ):
-        builder.add(corners, normal, uvs, tint, np.ones(4, np.float32), light)
+        builder.add(corners, normal, uvs, tint, np.ones(4, np.float32), light, block_id("water"))
     return builder.finish()
 
 
@@ -555,13 +597,17 @@ def _build_trees(world: World, cutout: _Builder, rng: np.random.Generator, densi
                 TINT_FOLIAGE,
                 leaf_light,
                 0.93,
+                block_id("oak_leaves"),
             )
 
 
-def _emit_box(builder: _Builder, low, size_xyz, tile, tint, light, ao_value) -> None:
+def _emit_box(builder: _Builder, low, size_xyz, tile, tint, light, ao_value, entity: float = 0.0) -> None:
     for normal, corners in _FACE_SIDES:
         scaled = [(c[0] * size_xyz[0], c[1] * size_xyz[1], c[2] * size_xyz[2]) for c in corners]
-        _emit_voxel(builder, low, normal, scaled, tile, tint, np.full(4, ao_value, np.float32), light)
+        builder.add(
+            [(c[0] + low[0], c[1] + low[1], c[2] + low[2]) for c in scaled],
+            normal, _tile_uvs(tile), tint, np.full(4, ao_value, np.float32), light, entity,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -582,8 +628,9 @@ def load_scene(
     which takes seconds; caching it keyed on every parameter that affects
     geometry keeps repeated preview runs instant.
     """
+    properties = (Path(__file__).resolve().parents[1] / "shaders" / "block.properties").read_bytes()
     key = hashlib.sha256(
-        f"{seed}|{size}|{atlas_seed}|{tree_density}|{SEA_LEVEL}".encode()
+        f"{seed}|{size}|{atlas_seed}|{tree_density}|{SEA_LEVEL}|".encode() + properties
     ).hexdigest()[:16]
     cache = (cache_dir or Path(__file__).resolve().parent / ".cache") / f"scene-{key}.npz"
     world = build_world(seed, size)
@@ -592,7 +639,7 @@ def load_scene(
     if cache.is_file():
         try:
             with np.load(cache) as data:
-                batches = {name: Batch(*(data[f"{name}_{field}"] for field in ("pos", "nrm", "uv", "col", "lm", "idx"))) for name in ("opaque", "cutout", "water")}
+                batches = {name: Batch(*(data[f"{name}_{field}"] for field in ("pos", "nrm", "uv", "col", "lm", "idx", "ent"))) for name in ("opaque", "cutout", "water")}
             return atlas, world, batches
         except (KeyError, ValueError, OSError):
             # A stale or truncated cache is not worth failing a preview over.
@@ -602,7 +649,7 @@ def load_scene(
     cache.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, np.ndarray] = {}
     for name, batch in batches.items():
-        for field_name in ("pos", "nrm", "uv", "col", "lm", "idx"):
+        for field_name in ("pos", "nrm", "uv", "col", "lm", "idx", "ent"):
             payload[f"{name}_{field_name}"] = getattr(batch, field_name)
     np.savez_compressed(cache, **payload)
     return atlas, world, batches

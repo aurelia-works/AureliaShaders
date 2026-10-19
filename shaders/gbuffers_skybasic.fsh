@@ -5,10 +5,6 @@
 #include "/lib/color.glsl"
 #include "/lib/look.glsl"
 #include "/lib/sky.glsl"
-#ifdef AURELIA_CLOUD_LAYER
-    #include "/lib/clouds2d.glsl"
-#endif
-
 // sunPosition, not shadowLightPosition. Iris documents shadowLightPosition as
 // the *highest* celestial body, which is the moon at night, so deriving a sky
 // term from it made the horizon haze follow the moon after sunset and left this
@@ -30,8 +26,13 @@ uniform int renderStage;
     #define MC_RENDER_STAGE_STARS 6
 #endif
 
-/* RENDERTARGETS: 0 */
+/* RENDERTARGETS: 0,1 */
 layout(location = 0) out vec4 aureliaSceneColor;
+// Open-sky marker for deferred.fsh, which paints the cloud layer only where
+// the dome is still visible after the opaque world is drawn. (0, 0, 0, 1)
+// decodes to flags 255, which aureliaEncodeGbuffer never writes (max 248),
+// and alpha 1 survives Iris's sky blend state either way.
+layout(location = 1) out vec4 aureliaSkyMarker;
 
 void main() {
     // Vanilla's star quads are drawn ADDITIVELY through this program, so
@@ -70,69 +71,19 @@ void main() {
     skyRayView /= skyRayView.w;
     vec3 direction = normalize((gbufferModelViewInverse * vec4(skyRayView.xyz, 0.0)).xyz);
 
-#ifdef AURELIA_ATMOSPHERE
-    // Directional atmosphere: see lib/sky.glsl. ALU only, no texture or target.
-    // The sun and moon discs are analytic (lib/sky.glsl), so Minecraft's square
-    // sun/moon textures are suppressed here rather than stacked on top.
-    vec3 sky = aureliaAtmosphereSky(
-        skyColorLinear, fogColorLinear, direction,
-        aureliaSunDirection(), aureliaMoonDirection(), rainStrength);
-#else
-    // Revertible fallback: the flat analytical ramp used before P3.1.
-    float elevation = clamp(direction.y, -1.0, 1.0);
+    // Phase 5: the physical sky (lib/atmosphere.glsl LUT, baked once per
+    // frame by prepare.fsh) plus the sun, moon and stars (lib/sky.glsl).
+    // One bilinear fetch per pixel for the dome itself.
+    vec3 sky = aureliaSkyView(direction, rainStrength);
 
-    // The horizon has to agree with what aureliaApplyFog resolves to at maximum
-    // distance, or the far edge of the world shows a seam against the sky.
-    // fogColor is exactly that colour, so it anchors the bottom of the ramp,
-    // through the named contract helper so sky and fog cannot drift apart.
-    vec3 horizon = aureliaHorizonColor(fogColorLinear);
-    // Zenith deepens rather than darkens: the ramp keeps more of the sky's own
-    // hue overhead so a saturated sky does not turn into a flat dark cap.
-    vec3 zenith = aureliaZenithColor(skyColorLinear);
-    float ramp = smoothstep(-0.06, 0.62, elevation);
-    vec3 sky = mix(horizon, zenith, ramp);
-
-    // A broad glow around the sun's azimuth, strongest when the sun is low. This
-    // is the atmosphere, not the disc: the sun and moon themselves are Minecraft
-    // textures drawn by gbuffers_skytextured, so an analytic disc here would
-    // double them. Two cosines and a smoothstep, no texture read.
-    vec3 lightDirection = aureliaSunDirection();
-    vec2 viewAzimuth = direction.xz;
-    vec2 lightAzimuth = lightDirection.xz;
-    float azimuthLength = length(viewAzimuth) * length(lightAzimuth);
-    float toward = azimuthLength > 1e-4
-        ? max(dot(viewAzimuth, lightAzimuth) / azimuthLength, 0.0)
-        : 0.0;
-    toward = pow(toward, 3.0);
-    float lowSun = 1.0 - smoothstep(0.0, 0.34, abs(lightDirection.y));
-    vec3 glowColor = mix(vec3(1.00, 0.72, 0.42), vec3(1.00, 0.90, 0.74), smoothstep(0.0, 0.30, lightDirection.y));
-    sky += glowColor * (toward * lowSun * 0.34 * (1.0 - ramp * 0.65)) * (1.0 - AURELIA_RAIN_GLOW_DIM * rainStrength);
-
-    // Rain flattens the ramp toward the fog colour, which is what an overcast
-    // sky does, instead of leaving a clear gradient over a dimmed sun.
-    sky = mix(sky, fogColorLinear, AURELIA_RAIN_SKY_FLATTEN * rainStrength);
-
-    // The shared celestial bodies, so Potato keeps the same round sun, moon
-    // and stars as the analytic presets instead of Minecraft's square
-    // textures. ALU only: ~30 operations per sky pixel, no samplers, no
-    // passes - negligible even on this preset's budget.
-    float day = aureliaSunVisibility();
-    float sunAlign = max(dot(direction, lightDirection), 0.0);
-    sky = aureliaApplySunDisc(sky, sunAlign, day, rainStrength);
-    sky = aureliaApplyMoon(sky, direction, aureliaMoonDirection(), day, rainStrength);
-    sky = aureliaApplyStars(sky, direction, lightDirection.y, rainStrength);
-#endif
-
-#ifdef AURELIA_CLOUD_LAYER
-    // Painted cloud layer over the finished dome and bodies (it hides the sun
-    // disc and stars behind it). Sky pixels only; see lib/clouds2d.glsl.
-    sky = aureliaApplyCloudLayer(sky, direction, aureliaSunDirection(), aureliaMoonDirection(), rainStrength);
-#endif
+    // The painted cloud layer is added in deferred.fsh, on the sky pixels the
+    // world leaves visible (lib/clouds2d.glsl).
+    bool openSky = !hasCeiling;
 
     // Nether (hasCeiling): no sun-driven atmosphere and no celestial bodies,
     // only Minecraft's own fog colour (see lib/sky.glsl). Covers both paths.
     if (hasCeiling) {
-        sky = fogColorLinear;
+        sky = fogColorLinear * AURELIA_NETHER_FOG_SCALE;
     }
 
 #ifdef AURELIA_WATER_UNDERWATER
@@ -144,6 +95,7 @@ void main() {
     // so an above-water frame evaluates the accepted sky untouched.
     if (isEyeInWater == 1) {
         sky = aureliaUnderwaterColor(direction, rainStrength);
+        openSky = false;
     }
 #endif
 
@@ -154,5 +106,6 @@ void main() {
     // this fallback it multiplied the ramp by the near-black night vertex
     // colour, crushing Potato nights to black. Alpha stays 1.0: opaque sky.
     aureliaSceneColor = vec4(sky, 1.0);
+    aureliaSkyMarker = openSky ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(0.0);
 #endif
 }

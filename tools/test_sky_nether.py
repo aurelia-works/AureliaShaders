@@ -31,9 +31,11 @@ NOON, MIDNIGHT = 0.25, 0.75
 
 def top_band(image: np.ndarray) -> np.ndarray:
     """Upper-left block: open sky for the nightsky camera (the foliage and the
-    cloud slab sit to the right and below)."""
+    cloud slab sit to the right and below). 3/10 wide, not 2/5: since the
+    preview tags leaves with their block ID they sway, and a leaf edge reaches
+    x ~ 0.3-0.4 of the frame."""
     rgb = image[..., :3].astype(np.float32)
-    return rgb[: rgb.shape[0] * 2 // 5, : rgb.shape[1] * 2 // 5]
+    return rgb[: rgb.shape[0] * 2 // 5, : rgb.shape[1] * 3 // 10]
 
 
 def main() -> int:

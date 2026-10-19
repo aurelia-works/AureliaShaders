@@ -19,8 +19,9 @@ require a real Iris run.
 from __future__ import annotations
 
 import ctypes
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -30,10 +31,14 @@ from OpenGL.GL import *  # noqa: F403
 
 from preview_glsl import VERTEX_UPLOAD, VERTEX_UPLOAD_COMPONENTS, build_source
 from preview_targets import (
+    COMPOSITE_ORDER,
+    DEFERRED_ORDER,
+    PREPARE_ORDER,
     TargetConfig,
     collect_target_configs,
-    composite_passes_present,
+    mipmapped_targets,
     parse_render_targets,
+    passes_present,
 )
 
 # Iris derives lmcoord as clamp(mc1 / (30/32) - (1/32), 0, 1) in every vertex
@@ -140,6 +145,10 @@ class Sky:
 
     time: float = 0.28
     rain: float = 0.0
+    # Iris's sunPathRotation in degrees: tilts the sun's daily arc about its
+    # east-west axis so the noon sun stands off the zenith. PreviewRenderer
+    # fills it from the pack's AURELIA_SUN_PATH_ROTATION.
+    path_rotation: float = 0.0
 
     @property
     def sun_angle(self) -> float:
@@ -150,7 +159,15 @@ class Sky:
     def sun_direction(self) -> np.ndarray:
         a = self.sun_angle
         direction = np.array([0.28 * np.sin(a), np.cos(a), 0.94 * np.sin(a)])
-        return direction / np.linalg.norm(direction)
+        direction = direction / np.linalg.norm(direction)
+        if self.path_rotation:
+            # Rodrigues rotation about the arc's horizontal (rise-set) axis.
+            axis = np.array([0.28, 0.0, 0.94])
+            axis = axis / np.linalg.norm(axis)
+            t = np.radians(self.path_rotation)
+            direction = (direction * np.cos(t) + np.cross(axis, direction) * np.sin(t)
+                         + axis * np.dot(axis, direction) * (1.0 - np.cos(t)))
+        return direction
 
     @property
     def moon_direction(self) -> np.ndarray:
@@ -314,7 +331,7 @@ class Program:
         else:
             raise TypeError(f"unsupported uniform type for {name}: {type(value)}")
 
-    def sampler(self, name: str, unit: int, texture: int, compare_sampler: int = 0) -> None:
+    def sampler(self, name: str, unit: int, texture: int, compare_sampler: int = 0, target: int = GL_TEXTURE_2D) -> None:
         """Bind ``texture`` to ``unit``.
 
         A uniform declared ``sampler2DShadow`` is how the pack opts into Iris's
@@ -327,7 +344,7 @@ class Program:
         location = self.location(name)
         if location is not None:
             glActiveTexture(GL_TEXTURE0 + unit)
-            glBindTexture(GL_TEXTURE_2D, texture)
+            glBindTexture(target, texture)
             shadow = self.is_shadow_sampler(name)
             glBindSampler(unit, compare_sampler if shadow else 0)
             glUniform1i(location, unit)
@@ -344,6 +361,42 @@ class Program:
 
     def dispose(self) -> None:
         glDeleteProgram(self.handle)
+
+
+# Iris's built-in noisetex (CustomTextureManager -> NativeImageBackedNoiseTexture):
+# a noiseTextureResolution-square image filled from java.util.Random(0), one
+# nextInt() per pixel in x-major order, written as an ABGR int with alpha forced
+# opaque, so R/G/B are the int's low three bytes. Uploaded with blur on and
+# clamp off: linear filtering, repeat wrapping, no mipmaps.
+NOISE_TEXTURE_RESOLUTION = 256
+NOISE_TEXTURE_UNIT = 14
+
+
+def iris_noise_pixels(size: int = NOISE_TEXTURE_RESOLUTION) -> np.ndarray:
+    multiplier, addend, mask = 0x5DEECE66D, 0xB, (1 << 48) - 1
+    seed = (0 ^ multiplier) & mask
+    pixels = np.empty((size, size, 4), np.uint8)
+    for x in range(size):
+        for y in range(size):
+            seed = (seed * multiplier + addend) & mask
+            value = seed >> 16
+            pixels[y, x] = (value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, 0xFF)
+    return pixels
+
+
+def _make_noise_texture() -> int:
+    size = NOISE_TEXTURE_RESOLUTION
+    texture = glGenTextures(1)
+    glBindTexture(GL_TEXTURE_2D, texture)
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, iris_noise_pixels(size))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0)
+    glBindTexture(GL_TEXTURE_2D, 0)
+    return texture
 
 
 def _make_rgba_texture(width: int, height: int, data: np.ndarray) -> int:
@@ -382,6 +435,10 @@ _GL_INTERNAL_FORMATS: dict[str, int] = {
     "RGBA32F": GL_RGBA32F,
     "RGBA16F": GL_RGBA16F,
     "RGB16F": GL_RGB16F,
+    "R11F_G11F_B10F": GL_R11F_G11F_B10F,
+    "RG16F": GL_RG16F,
+    "R16F": GL_R16F,
+    "RGBA16": GL_RGBA16,
     "RGBA8": GL_RGBA8,
     "RGB8": GL_RGB8,
     "RG8": GL_RG8,
@@ -395,49 +452,80 @@ def _internal_format(name: str) -> int:
     return _GL_INTERNAL_FORMATS[name]
 
 
-def _make_scene_target(config: TargetConfig, width: int, height: int) -> tuple[int, int, int]:
-    """A colour target in the format the pack's directive declares, plus depth.
+def _make_color_texture(config: TargetConfig, width: int, height: int) -> int:
+    """One colour texture in the declared format.
 
-    colortex0 is always full-resolution with a depth attachment; the format is
-    read from the ``colortex0Format`` directive rather than hardcoded.
+    Iris filters every non-integer colour target linearly, so a pass may
+    upsample a small target (a sky lookup table, a quarter-size cloud buffer)
+    with a plain texture() call.
     """
     color = glGenTextures(1)
     glBindTexture(GL_TEXTURE_2D, color)
     glTexImage2D(
         GL_TEXTURE_2D, 0, _internal_format(config.fmt), width, height, 0, GL_RGBA, GL_FLOAT, None
     )
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-
-    depth = _make_depth_texture(width, height)
-    fbo = glGenFramebuffers(1)
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo)
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0)
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth, 0)
-    _require_complete("scene")
-    glBindFramebuffer(GL_FRAMEBUFFER, 0)
-    return fbo, color, depth
+    return color
 
 
-def _make_color_target(config: TargetConfig, width: int, height: int) -> tuple[int, int]:
-    """A standalone colour target (no depth) for a composite-style pass output."""
-    color = glGenTextures(1)
-    glBindTexture(GL_TEXTURE_2D, color)
-    glTexImage2D(
-        GL_TEXTURE_2D, 0, _internal_format(config.fmt), width, height, 0, GL_RGBA, GL_FLOAT, None
-    )
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-    fbo = glGenFramebuffers(1)
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo)
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0)
-    _require_complete(f"colortex{config.index}")
-    glBindFramebuffer(GL_FRAMEBUFFER, 0)
-    return fbo, color
+def _option_float(shaders_root: Path, overrides: dict, name: str, fallback: float) -> float:
+    """An option's value: the preset override, else the #define default in
+    lib/options.glsl, else ``fallback``."""
+    if name in overrides:
+        return float(overrides[name])
+    options = Path(shaders_root) / "lib" / "options.glsl"
+    if options.exists():
+        match = re.search(rf"^#define {name} (-?[0-9.]+)", options.read_text(), re.M)
+        if match:
+            return float(match.group(1))
+    return fallback
+
+
+class ColorTarget:
+    """A colortexN pair, as Iris allocates it: a main and an alternate texture.
+
+    gbuffers programs write the current texture in place. A composite-style
+    pass writes the other one and the pair then flips, so a pass can read a
+    target and write it in the same draw, and every later pass (and the next
+    frame, for a clear=false history target) reads the newest content.
+    """
+
+    def __init__(self, config: TargetConfig, width: int, height: int) -> None:
+        self.config = config
+        self.width, self.height = width, height
+        self.textures = [_make_color_texture(config, width, height) for _ in range(2)]
+        self.fbos = []
+        for texture in self.textures:
+            fbo = glGenFramebuffers(1)
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0)
+            _require_complete(f"colortex{config.index}")
+            self.fbos.append(fbo)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        self.current = 0
+
+    @property
+    def read(self) -> int:
+        return self.textures[self.current]
+
+    @property
+    def spare(self) -> int:
+        return self.textures[1 - self.current]
+
+    def flip(self) -> None:
+        self.current = 1 - self.current
+
+    def clear(self) -> None:
+        glBindFramebuffer(GL_FRAMEBUFFER, self.fbos[self.current])
+        glClearColor(*self.config.clear_color)
+        glClear(GL_COLOR_BUFFER_BIT)
+
+    def dispose(self) -> None:
+        glDeleteFramebuffers(len(self.fbos), self.fbos)
+        glDeleteTextures(len(self.textures), self.textures)
 
 
 def _make_shadow_target(resolution: int) -> tuple[int, int]:
@@ -769,11 +857,14 @@ class PreviewRenderer:
         undefined: set[str] | None = None,
         frame_time: float = 12.0,
         underwater_eye: bool = False,
+        enabled: set[str] | None = None,
+        render_distance: float = 0.0,
     ) -> None:
         self.shaders_root = shaders_root
         self.width, self.height = width, height
         self.overrides = dict(overrides or {})
         self.undefined = set(undefined or set())
+        self.enabled = set(enabled or set())
         # Continuous seconds fed to Iris's frameTimeCounter. Fixed by default so
         # existing preview evidence stays byte-for-byte reproducible.
         self.frame_time = float(frame_time)
@@ -784,6 +875,9 @@ class PreviewRenderer:
         # reads it only under AURELIA_WATER_UNDERWATER, so setting it while the
         # option is compiled out is a harmless no-op.
         self.underwater_eye = bool(underwater_eye)
+        # Iris's `far` (render distance in blocks). 0 keeps the pack's
+        # far-dependent terms (border fog) off, as every earlier preview did.
+        self.render_distance = float(render_distance)
         self.context = Context(width, height)
         self._programs: dict[str, Program] = {}
         self._geometry: dict[tuple, tuple[int, int, int]] = {}
@@ -792,15 +886,29 @@ class PreviewRenderer:
         self.shadows_enabled = "AURELIA_SHADOWS" not in self.undefined
         self.shadow_resolution = int(self.overrides.get("AURELIA_SHADOW_RESOLUTION", "1024"))
         self.shadow_distance = float(self.overrides.get("AURELIA_SHADOW_DISTANCE", "96"))
+        self.sun_path_rotation = _option_float(self.shaders_root, self.overrides, "AURELIA_SUN_PATH_ROTATION", 0.0)
         # Colour targets are derived from the pack's own directives, not assumed.
         self.target_configs = collect_target_configs(shaders_root)
         if 0 not in self.target_configs:
             raise RuntimeError("pack declares no colortex0 target")
-        self._targets: dict[int, tuple[int, int, int, int]] = {}
-        self.scene_fbo, self.scene_color, self.scene_depth = _make_scene_target(
-            self.target_configs[0], width, height
-        )
-        self._targets[0] = (self.scene_fbo, self.scene_color, width, height)
+        self._targets: dict[int, ColorTarget] = {}
+        # Every declared target exists from the first frame, as in Iris, so a
+        # history target (clear=false) keeps its content between frames.
+        for index in self.target_configs:
+            self._target(index)
+        # The gbuffers framebuffer: the live scene depth plus, per draw, the
+        # current texture of each target the program's RENDERTARGETS names.
+        self.scene_depth = _make_depth_texture(width, height)
+        self.scene_fbo = glGenFramebuffers(1)
+        glBindFramebuffer(GL_FRAMEBUFFER, self.scene_fbo)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, self.scene_depth, 0)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        self._attach_gbuffers([0])
+        # Frame bookkeeping for history passes: Iris's frameCounter and the
+        # previous frame's camera, which a still preview repeats.
+        self.frame_counter = 0
+        self._previous: dict[str, object] | None = None
+        self.custom_textures: dict[str, tuple[int, int]] = {}
         self.shadow_fbo, self.shadow_depth = _make_shadow_target(self.shadow_resolution)
         # Iris's shadowHardwareFiltering: depth compare (receiver <= stored)
         # with bilinear filtering. Applied only where a program declares the
@@ -817,22 +925,39 @@ class PreviewRenderer:
         # water as Iris's depthtex1 (the pre-translucent copy; depthtex0 is
         # live during translucents). Allocated once, reused every frame.
         self.depth_copy_fbo, self.depth_copy = _make_depth_only_target(width, height)
+        self.noise_texture = _make_noise_texture()
 
-    def _target(self, index: int) -> tuple[int, int, int, int]:
-        """The (fbo, colour, width, height) for a colour target, allocated lazily."""
+    def _target(self, index: int) -> ColorTarget:
+        """The colour target pair for colortex``index``, allocated lazily."""
         if index not in self._targets:
             config = self.target_configs.get(index)
             if config is None:
                 raise RuntimeError(f"colortex{index} is not declared by the pack")
             width, height = config.size(self.width, self.height)
-            fbo, color = _make_color_target(config, width, height)
-            self._targets[index] = (fbo, color, width, height)
+            self._targets[index] = ColorTarget(config, width, height)
         return self._targets[index]
+
+    @property
+    def scene_color(self) -> int:
+        return self._targets[0].read
+
+    def _attach_gbuffers(self, targets: list[int]) -> None:
+        """Point the scene framebuffer's outputs at ``targets``, in order.
+
+        Fragment output location k writes colour attachment k, which holds the
+        current texture of colortex``targets[k]``: the RENDERTARGETS mapping.
+        """
+        glBindFramebuffer(GL_FRAMEBUFFER, self.scene_fbo)
+        for slot in range(8):
+            texture = self._target(targets[slot]).read if slot < len(targets) else 0
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + slot, GL_TEXTURE_2D, texture, 0)
+        glDrawBuffers(len(targets), [GL_COLOR_ATTACHMENT0 + slot for slot in range(len(targets))])
+        _require_complete("gbuffers")
 
     def program(self, name: str) -> Program:
         if name not in self._programs:
-            vertex = build_source(self.shaders_root, name, "vsh", self.overrides, self.undefined)
-            fragment = build_source(self.shaders_root, name, "fsh", self.overrides, self.undefined)
+            vertex = build_source(self.shaders_root, name, "vsh", self.overrides, self.undefined, self.enabled)
+            fragment = build_source(self.shaders_root, name, "fsh", self.overrides, self.undefined, self.enabled)
             self._programs[name] = Program(vertex, fragment, name)
         return self._programs[name]
 
@@ -841,17 +966,19 @@ class PreviewRenderer:
             glDeleteVertexArrays(1, [vao])
             glDeleteBuffers(2, [vbo, ibo])
         self._geometry.clear()
-        for fbo, color, _, _ in self._targets.values():
-            glDeleteFramebuffers(1, [fbo])
-            glDeleteTextures(1, [color])
+        for target in self._targets.values():
+            target.dispose()
         self._targets.clear()
-        if self.scene_depth:
-            glDeleteTextures(1, [self.scene_depth])
+        for texture, _ in self.custom_textures.values():
+            glDeleteTextures(1, [texture])
+        glDeleteFramebuffers(1, [self.scene_fbo])
+        glDeleteTextures(1, [self.scene_depth])
         glDeleteFramebuffers(1, [self.depth_copy_fbo])
         glDeleteTextures(1, [self.depth_copy])
         glDeleteFramebuffers(1, [self.shadow_fbo])
         glDeleteTextures(1, [self.shadow_depth])
         glDeleteSamplers(1, [self.shadow_compare_sampler])
+        glDeleteTextures(1, [self.noise_texture])
         for program in self._programs.values():
             program.dispose()
         self.context.close()
@@ -876,6 +1003,9 @@ class PreviewRenderer:
             "skyColor": sky.sky_color,
             "fogColor": sky.fog_color,
             "rainStrength": float(sky.rain),
+            # Iris's wetness eases toward rainStrength over wetnessHalflife; a
+            # still frame shows the settled state, which is rainStrength.
+            "wetness": float(sky.rain),
             "cameraPosition": np.asarray(camera.eye, np.float32),
             "aureliaAdaptiveQuality": float(adaptive),
             "aureliaSmoothedFrameTime": 0.0165,
@@ -905,6 +1035,7 @@ class PreviewRenderer:
         adaptive: float = 0.7,
         draw_sky: bool = True,
     ) -> tuple[np.ndarray, dict[str, float]]:
+        sky = replace(sky, path_rotation=self.sun_path_rotation)
         common = self._common_uniforms(camera, sky, adaptive)
         view = camera.view()
         projection = perspective(camera.fov, self.width / self.height, _NEAR, _FAR)
@@ -912,10 +1043,28 @@ class PreviewRenderer:
         # projection (Iris's gbuffers_skybasic convention), so these must be
         # present exactly as Iris provides them.
         common["gbufferProjectionInverse"] = np.linalg.inv(projection)
+        common["gbufferProjection"] = projection
         common["viewWidth"] = float(self.width)
         common["viewHeight"] = float(self.height)
+        common["aspectRatio"] = float(self.width) / float(self.height)
+        common["near"] = float(_NEAR)
+        common["far"] = float(self.render_distance)
+        common["gbufferModelView"] = view
+        common["frameCounter"] = int(self.frame_counter)
+        # Iris's previous-frame camera. A still preview repeats the current
+        # one, so a history pass converges as it would with the player standing
+        # still.
+        previous = self._previous or {
+            "gbufferPreviousModelView": view,
+            "gbufferPreviousProjection": projection,
+            "previousCameraPosition": np.asarray(camera.eye, np.float32),
+        }
+        common.update(previous)
         eye = np.asarray(camera.eye, np.float32)
         light = self._light_matrices(camera, sky) if self.shadows_enabled else None
+        if light is not None:
+            common["shadowModelView"] = light[0]
+            common["shadowProjection"] = light[1]
 
         atlas_texture = _make_rgba_texture(atlas.shape[1], atlas.shape[0], atlas)
         sun = _make_rgba_texture(128, 128, sun_texture())
@@ -923,11 +1072,22 @@ class PreviewRenderer:
         clouds = _make_rgba_texture(512, 512, clouds_texture())
 
         started = time.perf_counter()
+        # Iris clears every clear=true target at the start of the frame.
+        for target in self._targets.values():
+            if target.config.clear:
+                target.clear()
         if self.shadows_enabled:
             self._render_shadow(batches, light, atlas_texture, eye, sky)
+        self._run_phase(PREPARE_ORDER, common)
         self._render_scene(batches, camera, sky, common, view, projection, light, eye, atlas_texture, sun, moon, clouds, draw_sky)
         image = self._run_composite_passes(common)
         glFinish()
+        self.frame_counter += 1
+        self._previous = {
+            "gbufferPreviousModelView": view,
+            "gbufferPreviousProjection": projection,
+            "previousCameraPosition": np.asarray(camera.eye, np.float32),
+        }
         elapsed_ms = (time.perf_counter() - started) * 1000.0
 
         for texture in (atlas_texture, sun, moon, clouds):
@@ -992,6 +1152,7 @@ class PreviewRenderer:
         what the water program reads).
         """
         glBindFramebuffer(GL_READ_FRAMEBUFFER, self.scene_fbo)
+        glReadBuffer(GL_COLOR_ATTACHMENT0)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, self.depth_copy_fbo)
         glBlitFramebuffer(
             0, 0, self.width, self.height,
@@ -1004,36 +1165,52 @@ class PreviewRenderer:
         glBindFramebuffer(GL_FRAMEBUFFER, self.scene_fbo)
         return self.depth_copy
 
+    def _gbuffers(self, program: Program) -> None:
+        """Bind the scene framebuffer with ``program``'s RENDERTARGETS."""
+        source = self._fragment_source(program.label)
+        targets = parse_render_targets(source) or [0]
+        self._attach_gbuffers(targets)
+        glViewport(0, 0, self.width, self.height)
+
+    def _fragment_source(self, name: str) -> str:
+        if not hasattr(self, "_sources"):
+            self._sources: dict[str, str] = {}
+        if name not in self._sources:
+            self._sources[name] = (self.shaders_root / f"{name}.fsh").read_text(encoding="utf-8")
+        return self._sources[name]
+
     def _render_scene(
         self, batches, camera, sky, common, view, projection, light, eye, atlas, sun, moon, clouds, draw_sky
     ) -> None:
-        glBindFramebuffer(GL_FRAMEBUFFER, self.scene_fbo)
+        self._attach_gbuffers([0])
         glViewport(0, 0, self.width, self.height)
-        # The pack declares colortex0ClearColor = black, so Iris's default sRGB
-        # fog clear never enters the linear scene.
-        glClearColor(0.0, 0.0, 0.0, 1.0)
         glClearDepth(1.0)
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        glClear(GL_DEPTH_BUFFER_BIT)
 
         if draw_sky:
             self._draw_sky(self.program("gbuffers_skybasic"), common, view, projection)
             self._draw_sun_moon(self.program("gbuffers_skytextured"), sun, moon, camera, projection, sky)
 
         terrain = self.program("gbuffers_terrain")
-        for name in ("opaque", "cutout"):
+        # Iris draws the solid layer with gbuffers_terrain_solid when the pack
+        # ships it, and falls back to gbuffers_terrain otherwise.
+        solid = (self.program("gbuffers_terrain_solid")
+                 if (self.shaders_root / "gbuffers_terrain_solid.fsh").is_file() else terrain)
+        for name, program in (("opaque", solid), ("cutout", terrain)):
             batch = batches[name]
             if batch.count:
-                self._draw_geometry(terrain, batch, camera, common, view, projection, light, eye, atlas, sky)
+                self._draw_geometry(program, batch, camera, common, view, projection, light, eye, atlas, sky)
+
+        # Iris copies the opaque depth (depthtex1) before the deferred passes
+        # and the translucent geometry, unconditionally.
+        depth_texture = self._snapshot_depth()
+        self._run_phase(DEFERRED_ORDER, common)
 
         water = batches["water"]
         if water.count:
             water_program = self.program("gbuffers_water")
-            # Snapshot the opaque depth only when the water program actually
-            # reads depthtex1 (AURELIA_WATER_DEPTH). With the option compiled
-            # out the uniform is stripped, so the default path pays no copy.
-            depth_texture = None
-            if water_program.location("depthtex1") is not None:
-                depth_texture = self._snapshot_depth()
+            if water_program.location("depthtex1") is None:
+                depth_texture = None
             self._draw_geometry(
                 water_program,
                 water,
@@ -1067,6 +1244,8 @@ class PreviewRenderer:
         # underside, so both faces must draw.
         glDisable(GL_CULL_FACE)
         program.use()
+        self._gbuffers(program)
+        self._bind_resources(program, 3)
         for name, value in common.items():
             program.set(name, value)
         program.set("alphaTestRef", 0.0)
@@ -1081,6 +1260,8 @@ class PreviewRenderer:
         glDisable(GL_BLEND)
         glDisable(GL_CULL_FACE)
         program.use()
+        self._gbuffers(program)
+        self._bind_resources(program, 3)
         for name, value in common.items():
             program.set(name, value)
         # A real skybox, not a fullscreen quad: the program reads its direction
@@ -1097,6 +1278,8 @@ class PreviewRenderer:
         glDepthMask(GL_FALSE)
         glDisable(GL_CULL_FACE)
         program.use()
+        self._gbuffers(program)
+        self._bind_resources(program, 3)
         view_space = camera.view()[:3, :3]
         # Iris's renderStage: MC_RENDER_STAGE_SUN = 4, MC_RENDER_STAGE_MOON = 5.
         for texture, world_direction, stage in ((sun, sky.sun_direction, 4), (moon, sky.moon_direction, 5)):
@@ -1143,6 +1326,8 @@ class PreviewRenderer:
         else:
             glDisable(GL_BLEND)
         program.use()
+        self._gbuffers(program)
+        self._bind_resources(program, 3)
         for name, value in common.items():
             program.set(name, value)
         program.set("alphaTestRef", alpha_test)
@@ -1175,6 +1360,8 @@ class PreviewRenderer:
         program.set("aureliaNormalMatrix", normal_matrix(view))
         program.set("aureliaTextureMatrix0", identity())
         program.set("aureliaTextureMatrix1", identity())
+        # Iris binds noisetex for every program that declares it.
+        program.sampler("noisetex", NOISE_TEXTURE_UNIT, self.noise_texture)
         vao, _, _ = self._geometry_for(batch, eye, daylight)
         glBindVertexArray(vao)
 
@@ -1188,27 +1375,28 @@ class PreviewRenderer:
         if key in self._geometry:
             return self._geometry[key][0], self._geometry[key][1], self._geometry[key][2]
 
-        position, normal, uv, color, lightmap, index = _upload_batch(batch, eye, daylight)
-        vao, vbo, ibo = _create_buffers(position, normal, uv, color, lightmap, index)
+        vao, vbo, ibo = _create_buffers(*_upload_batch(batch, eye, daylight))
         # Hold a reference to the batch: a temporary batch passed inline is freed
         # straight after this call, and CPython recycles ids, which would let a
         # later unrelated batch collide with this cache entry.
         self._geometry[key] = (vao, vbo, ibo, batch)
         return vao, vbo, ibo
 
+    def _run_phase(self, order: tuple[str, ...], common: dict) -> None:
+        """Run the fullscreen passes of one Iris phase (prepare, deferred)."""
+        for name in passes_present(self.shaders_root, order):
+            self._run_composite_pass(name, common)
+
     def _run_composite_passes(self, common: dict) -> np.ndarray:
-        """Run every composite-style program the pack ships, in Iris order.
+        """Run the composite passes and ``final``, in Iris order.
 
         ``final`` outputs to the default framebuffer and is the image returned.
-        Any earlier pass (``deferred``/``composite*``) outputs to its declared
-        RENDERTARGETS. A pack with no composite-style program, or one whose last
-        pass is not ``final``, cannot produce a display image.
+        Prepare and deferred passes ran earlier in the frame (``render``).
         """
-        passes = composite_passes_present(self.shaders_root)
-        if not passes:
-            raise RuntimeError("pack ships no composite-style pass (final.vsh/.fsh required)")
-        if passes[-1] != "final":
-            raise RuntimeError(f"pack ships composite passes but no final: {passes}")
+        passes = passes_present(self.shaders_root, COMPOSITE_ORDER)
+        passes = [name for name in passes if name not in PREPARE_ORDER and name not in DEFERRED_ORDER]
+        if not passes or passes[-1] != "final":
+            raise RuntimeError(f"pack ships no final pass: {passes}")
         image: np.ndarray | None = None
         for name in passes:
             image = self._run_composite_pass(name, common)
@@ -1217,18 +1405,25 @@ class PreviewRenderer:
 
     def _run_composite_pass(self, name: str, common: dict) -> np.ndarray | None:
         is_final = name == "final"
+        source = self._fragment_source(name)
+        written: list[int] = []
         if is_final:
             glBindFramebuffer(GL_FRAMEBUFFER, 0)
             glViewport(0, 0, self.width, self.height)
         else:
-            targets = parse_render_targets(
-                (self.shaders_root / f"{name}.fsh").read_text(encoding="utf-8")
-            )
-            if not targets:
+            written = parse_render_targets(source)
+            if not written:
                 raise RuntimeError(f"{name}.fsh declares no RENDERTARGETS")
-            fbo, _, width, height = self._target(targets[0])
-            glBindFramebuffer(GL_FRAMEBUFFER, fbo)
-            glViewport(0, 0, width, height)
+            first = self._target(written[0])
+            if not hasattr(self, "pass_fbo"):
+                self.pass_fbo = glGenFramebuffers(1)
+            glBindFramebuffer(GL_FRAMEBUFFER, self.pass_fbo)
+            for slot in range(8):
+                texture = self._target(written[slot]).spare if slot < len(written) else 0
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + slot, GL_TEXTURE_2D, texture, 0)
+            glDrawBuffers(len(written), [GL_COLOR_ATTACHMENT0 + slot for slot in range(len(written))])
+            _require_complete(f"{name} targets")
+            glViewport(0, 0, first.width, first.height)
 
         glDisable(GL_DEPTH_TEST)
         glDepthMask(GL_TRUE)
@@ -1238,20 +1433,50 @@ class PreviewRenderer:
         program.use()
         for uniform_name, value in common.items():
             program.set(uniform_name, value)
+        # Iris's `colortexNMipmapEnabled`: the mip chain is rebuilt just before
+        # the pass that asks for it and sampled with trilinear filtering.
+        mipmapped = mipmapped_targets(source)
+        for index in mipmapped:
+            glBindTexture(GL_TEXTURE_2D, self._target(index).read)
+            glGenerateMipmap(GL_TEXTURE_2D)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
         self._bind_composite_samplers(program)
         quad = fullscreen_quad()
         self._bind(program, quad, identity(), identity(), None, 1.0)
         glDrawElements(GL_TRIANGLES, quad.index_count, GL_UNSIGNED_INT, ctypes.c_void_p(0))
+        for index in mipmapped:
+            glBindTexture(GL_TEXTURE_2D, self._target(index).read)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        for index in written:
+            self._target(index).flip()
         return _read_pixels(self.width, self.height) if is_final else None
+
+    def _bind_resources(self, program: Program, unit: int, depth: bool = False) -> int:
+        """Bind every colour target, custom texture and (optionally) depth
+        texture ``program`` actually samples, from texture ``unit`` upward.
+
+        Only active samplers take a unit: Apple's GL exposes 16 fragment units,
+        so binding every target for every program would run out.
+        """
+        for index in sorted(self._targets):
+            name = f"colortex{index}"
+            if program.location(name) is not None:
+                program.sampler(name, unit, self._targets[index].read)
+                unit += 1
+        for name, (texture, kind) in self.custom_textures.items():
+            if program.location(name) is not None:
+                program.sampler(name, unit, texture, target=kind)
+                unit += 1
+        if depth:
+            for name, texture in (("depthtex0", self.scene_depth), ("depthtex1", self.depth_copy)):
+                if program.location(name) is not None:
+                    program.sampler(name, unit, texture)
+                    unit += 1
+        return unit
 
     def _bind_composite_samplers(self, program: Program) -> None:
         """Bind every colour target and depth/shadow texture a pass may read."""
-        unit = 0
-        for index in sorted(self._targets):
-            program.sampler(f"colortex{index}", unit, self._targets[index][1])
-            unit += 1
-        program.sampler("depthtex0", unit, self.scene_depth)
-        unit += 1
+        unit = self._bind_resources(program, 0, depth=True)
         if self.shadows_enabled:
             program.sampler("shadowtex0", unit, self.shadow_depth, self.shadow_compare_sampler)
             unit += 1
@@ -1277,12 +1502,32 @@ def _upload_batch(batch, eye: np.ndarray | None, daylight: float):
     # Scaling the already-packed value would shift the constant term too.
     target = np.asarray(batch.lm, np.float32).copy()
     target[:, 1] *= daylight
+    normal = np.asarray(batch.nrm, np.float32)
+    rows = position.shape[0]
+    entity = getattr(batch, "ent", None)
+    if entity is None or len(entity) != rows:
+        entity = np.zeros((rows, 1), np.float32)
+    # Block faces are axis-aligned, so the tangent (Iris's at_tangent, +u on
+    # the texture) follows from the normal: +X for floors and ceilings, the
+    # horizontal perpendicular for walls. w = 1, right-handed.
+    up = np.abs(normal[:, 1]) > 0.5
+    tangent = np.zeros((rows, 4), np.float32)
+    tangent[:, 3] = 1.0
+    tangent[up, 0] = 1.0
+    walls = ~up
+    tangent[walls, 0] = -normal[walls, 2]
+    tangent[walls, 2] = normal[walls, 0]
+    uv = np.asarray(batch.uv, np.float32)
     arrays = {
         "position": position,
-        "normal": np.asarray(batch.nrm, np.float32),
+        "normal": normal,
         "color": np.asarray(batch.col, np.float32),
-        "texcoord0": np.asarray(batch.uv, np.float32),
+        "texcoord0": uv,
         "texcoord1": (target + _LIGHT_BIAS) * _LIGHT_DIVISOR,
+        "entity": np.asarray(entity, np.float32).reshape(rows, 1),
+        "tangent": tangent,
+        # Per-quad centre of the texture coordinates (Iris's mc_midTexCoord).
+        "midtexcoord": np.repeat(uv.reshape(-1, 4, 2).mean(axis=1), 4, axis=0) if rows % 4 == 0 else uv,
     }
     resolved = [np.ascontiguousarray(arrays[name], np.float32) for name in VERTEX_UPLOAD]
     return tuple(resolved) + (np.ascontiguousarray(batch.idx, np.uint32),)

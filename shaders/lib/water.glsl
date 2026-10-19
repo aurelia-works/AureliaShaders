@@ -1,170 +1,111 @@
-// Analytic water surface for gbuffers_water.
+// Water optics (Phase 5), for gbuffers_water and the underwater atmosphere.
 //
-// Scope, and why it is narrow. This pack has no second colour target and no
-// composite pass, and gbuffers_water renders after deferred while writing
-// colortex0, so sampling the scene for a refraction offset is a feedback loop
-// with undefined results. Nothing here reads another target: the reflection is
-// the analytical sky and the fog colour, both of which Iris already supplies.
+// The surface is a sum of three octaves of drifting value noise read from
+// Iris's noisetex (nine fetches for the normal by finite differences). The
+// body below it is a participating medium: Beer-Lambert absorption through
+// the water column the view ray crosses (red goes first, then green, which is
+// why deep water turns blue-green and then dark), and light scattered back
+// out of the column by suspended particles, coloured by the same
+// coefficients. A canal or river is murkier than open sea; the coefficients
+// sit between clear coastal water and a city canal.
 //
-// The surface normal is two crossed analytic gradients rather than a texture.
-// That keeps the whole treatment to arithmetic, adds no sampler, and costs
-// nothing per fragment beyond two cosines for the surface and two for the glint
-// ripples.
-//
-// The wave field is animated by two travelling analytic waves driven by
-// frameTimeCounter, an Iris uniform documented in its own reference. The
-// motion sits behind AURELIA_WATER_ANIMATED so it can be switched off from the
-// options screen; with the option off the slope is the same static field as
-// before, byte for byte.
+// Needs lib/atmosphere.glsl (LUT read) and lib/look.glsl first: the light
+// that enters the water is the sky LUT's sun, moon and sky irradiance.
 
+#ifndef AURELIA_WATER_GLSL
+#define AURELIA_WATER_GLSL
 
-// skyColor, fogColor and the sun direction/uniforms are declared by
-// lib/look.glsl, which lib/lighting.glsl includes before this file. This file
-// declares exactly one uniform of its own -- frameTimeCounter, and only under
-// AURELIA_WATER_ANIMATED -- so the contract stays single-sourced. The reflection
-// samples the pack's own sky dome (aureliaSkyDome, via lib/sky.glsl included
-// through lib/lighting.glsl) so the water sees the same atmosphere the sky pass
-// draws.
-
-// Two crossed waves. The scales and headings are deliberately unrelated so the
-// interference pattern does not read as a regular grid.
-const vec2 AURELIA_WAVE_A = vec2(0.866, 0.500);
-const vec2 AURELIA_WAVE_B = vec2(-0.423, 0.906);
-
-#ifdef AURELIA_WATER_ANIMATED
-    uniform float frameTimeCounter;   // seconds (Iris)
-    const float AURELIA_WAVE_OMEGA_A = 0.55;  // rad/s (P4: was 0.30; ~11s period reads as living water, still far from strobing)
-    const float AURELIA_WAVE_OMEGA_B = 1.30;  // rad/s (P4: was 0.75; ~5s period carries the visible motion)
+#ifndef AURELIA_NOISETEX_DECLARED
+#define AURELIA_NOISETEX_DECLARED
+uniform sampler2D noisetex;
 #endif
 
-// Slope of the wave height field in the horizontal plane, per unit amplitude.
-// P4 retune: the two slope factors were 0.55/1.35 (ratio 2.45:1), so component
-// B dominated into parallel corduroy fringes that sat near-static at noon
-// (0.5 s frame-time pair moved 0.2/255 mean). 0.65/1.15 keeps long subtle
-// wavelengths (9.7/5.5 blocks, no gelatin) with more balanced
-// cross-interference; the static branch below keeps the identical field shape.
-vec2 aureliaWaterSlope(vec2 horizontalPosition) {
-#ifdef AURELIA_WATER_ANIMATED
-    vec2 slope = AURELIA_WAVE_A * (0.65 * cos(dot(AURELIA_WAVE_A, horizontalPosition) * 0.65 - AURELIA_WAVE_OMEGA_A * frameTimeCounter));
-    slope += AURELIA_WAVE_B * (1.15 * cos(dot(AURELIA_WAVE_B, horizontalPosition) * 1.15 - AURELIA_WAVE_OMEGA_B * frameTimeCounter));
-#else
-    vec2 slope = AURELIA_WAVE_A * (0.65 * cos(dot(AURELIA_WAVE_A, horizontalPosition) * 0.65));
-    slope += AURELIA_WAVE_B * (1.15 * cos(dot(AURELIA_WAVE_B, horizontalPosition) * 1.15));
-#endif
-    return slope;
+// Absorption and scattering per block (metre).
+// Pure water absorbs (0.34, 0.06, 0.015); dissolved organic matter adds
+// blue absorption and silt adds scattering, which turns it green-teal.
+const vec3  AURELIA_WATER_ABSORPTION = vec3(0.36, 0.09, 0.06);
+const float AURELIA_WATER_SCATTERING = 0.04;
+// Share of in-scattered light that leaves through the surface toward the
+// camera (a forward-peaked phase function sends most of it down).
+const float AURELIA_WATER_BACKSCATTER = 0.14;
+// Thickness assumed where the bed cannot be measured (depth option off).
+const float AURELIA_WATER_DEFAULT_THICKNESS = 3.0;
+// Reflectance at normal incidence (IOR 1.33).
+const float AURELIA_WATER_F0 = 0.02;
+// Minecraft's default water tint (#3F76E4), linear. Biomes whose tint departs
+// from it get murkier or clearer water, not just a recoloured surface.
+const vec3  AURELIA_WATER_REFERENCE_TINT = vec3(0.0497, 0.1779, 0.7758);
+
+float aureliaWaveNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return textureLod(noisetex, (i + f + 0.5) / 256.0, 0.0).r;
 }
 
-// Short fast ripples used ONLY to break the sun glint into a scattered path.
-// The large waves above tilt the surface by a few degrees, far less than the
-// glint lobe is wide, so on their own the highlight is one smooth blob. This
-// adds a small second slope field at ~2 block wavelength, applied to the
-// specular direction rather than the surface normal, so the body colour and the
-// Fresnel term stay calm. Fades out with distance: beyond ~100 blocks it would
-// alias into shimmer rather than read as sparkle.
-const float AURELIA_RIPPLE_STRENGTH = 0.06;
-const vec2 AURELIA_RIPPLE_C = vec2(0.643, -0.766);
-const vec2 AURELIA_RIPPLE_D = vec2(-0.906, -0.423);
-vec2 aureliaWaterRippleSlope(vec2 horizontalPosition) {
-#ifdef AURELIA_WATER_ANIMATED
-    float t = frameTimeCounter;
-#else
-    float t = 0.0;
-#endif
-    return AURELIA_RIPPLE_C * cos(dot(AURELIA_RIPPLE_C, horizontalPosition) * 2.3 - 1.9 * t)
-         + AURELIA_RIPPLE_D * cos(dot(AURELIA_RIPPLE_D, horizontalPosition) * 3.1 - 1.4 * t);
+float aureliaWaveHeight(vec2 p, float t) {
+    const mat2 turn1 = mat2(0.80, 0.60, -0.60, 0.80);
+    const mat2 turn2 = mat2(0.36, -0.93, 0.93, 0.36);
+    float h = 0.55 * aureliaWaveNoise(p * 0.32 + vec2(0.30, 0.11) * t);
+    h += 0.30 * aureliaWaveNoise(turn1 * p * 0.85 - vec2(0.17, 0.38) * t);
+    h += 0.15 * aureliaWaveNoise(turn2 * p * 2.10 + vec2(0.52, -0.29) * t);
+    return h;
 }
 
-// World-space surface normal of the water at a player-space position, oriented
-// UP (+y) for every horizontal face whichever way the vertex stage's normal
-// points, so the caller can flip it toward the viewer once and tell a surface
-// seen from above from one seen from below. The wave slope tilts the geometric
-// normal in proportion to its vertical component, so horizontal water gets the
-// full ripple, and a waterfall or flowing side face (normal.y ~ 0) keeps its
-// own orientation instead of being dragged toward a sky-facing wave normal.
-// `worldNormal` arrives constant per quad, so no pre-normalisation is needed:
-// one normalize in total.
-vec3 aureliaWaterNormal(vec2 horizontalPosition, vec3 worldNormal, float amplitude) {
-    vec2 slope = aureliaWaterSlope(horizontalPosition) * (0.75 * amplitude * abs(worldNormal.y));
-    return normalize(vec3(worldNormal.x - slope.x, abs(worldNormal.y), worldNormal.z - slope.y));
+// World-space wave normal of an up-facing water surface. `strength` is the
+// slope scale; it falls off with distance so far water does not alias into
+// noise, and rises with rain.
+vec3 aureliaWaveNormal(vec2 world, float strength, float t) {
+    const float e = 0.08;
+    float h0 = aureliaWaveHeight(world, t);
+    float hx = aureliaWaveHeight(world + vec2(e, 0.0), t);
+    float hz = aureliaWaveHeight(world + vec2(0.0, e), t);
+    vec2 slope = vec2(hx - h0, hz - h0) * (strength / e);
+    return normalize(vec3(-slope.x, 1.0, -slope.y));
 }
 
-// Schlick reflectance for water's index of refraction. F0 is small, so a
-// surface seen face-on is almost pure transmitted body colour and only grazing
-// angles pick up sky, which is what makes a shoreline read as a shoreline.
-float aureliaWaterFresnel(float cosine) {
-    float grazing = 1.0 - clamp(cosine, 0.0, 1.0);
-    float g2 = grazing * grazing;
-    return 0.02 + 0.98 * (g2 * g2 * grazing);
+// Raindrop rings on the surface: one jittered ring per cell, returning slope.
+vec2 aureliaRainRings(vec2 p, float time) {
+    vec2 cell = floor(p);
+    vec3 random = textureLod(noisetex, (cell + 0.5) / 256.0, 0.0).rgb;
+    vec2 local = fract(p) - 0.25 - 0.5 * random.xy;
+    float age = fract(time * 1.1 + random.z);
+    float r = length(local);
+    float band = 1.0 - smoothstep(0.0, 0.06, abs(r - age * 0.45));
+    return local / max(r, 1e-3) * (band * (1.0 - age));
 }
 
-// Reflection colour. There is no sky render target to sample, so the reflected
-// ray is evaluated against the pack's own sky dome (gradient + twilight palette
-// + solar aureole + rain response, no discs or stars) for the same direction
-// the sky pass would draw. The sun's direct glint stays in
-// gbuffers_water.fsh, so the sun is lit once in the reflection, not twice.
-vec3 aureliaWaterReflection(vec3 reflectedDirection) {
-    // The dome already carries the rain response, so no extra weather term
-    // here: that would flatten the reflection twice.
-    return aureliaSkyDome(
-        aureliaSkyColorLinear(),
-        aureliaFogColorLinear(),
-        reflectedDirection,
-        aureliaSunDirection(),
-        rainStrength);
+// Extinction of water whose biome tint is `tint` (linear vertex colour).
+// The tint's departure from the default makes the matching channels absorb
+// more: a swamp's brown-green tint takes out blue. tintRatio returns the
+// damped ratio, which also colours the in-scatter.
+vec3 aureliaWaterExtinction(vec3 tint, out vec3 tintRatio) {
+    tintRatio = pow(clamp(tint / AURELIA_WATER_REFERENCE_TINT, 0.25, 4.0), vec3(0.3));
+    return AURELIA_WATER_ABSORPTION + 0.25 * max(1.0 - tintRatio, 0.0) + AURELIA_WATER_SCATTERING;
 }
 
-// Mid-depth body absorption (red absorbed first): the accepted P3.3A palette.
-// Always defined: the plain body, the depth curve's middle and the underside
-// window all share it.
-const vec3 AURELIA_WATER_BODY_MID = vec3(0.58, 0.78, 0.90);
-// Linear teal the biome-tinted albedo is pulled toward (half way) so the body
-// reads blue-teal rather than the atlas's saturated pure blue.
-const vec3 AURELIA_WATER_ALBEDO = vec3(0.015, 0.260, 0.310);
-
-// Depth-based body absorption, gated by AURELIA_WATER_DEPTH.
-//
-// gbuffers_water reads Iris's depthtex1: the pre-translucent opaque depth copy
-// captured unconditionally in beginTranslucents, before deferred and
-// translucent rendering (verified by disassembly in the installed
-// iris-1.7.6+mc1.20.1.jar: copyPreTranslucentDepth into `noTranslucents`,
-// bound to depthtex1 for gbuffers programs). depthtex0 is live during
-// translucents and may hold the water surface itself, so it is not sampled.
-// reads clear; a thickening column settles through the accepted mid palette
-// vec3(0.58, 0.78, 0.90) and reaches a slightly deeper, richer limit. Only the
-// `body` term moves: Fresnel, reflection, glint and alpha are untouched, and
-// the multiplier never approaches black. One depth fetch and a handful of ALU
-// ops; no loop, noise, refraction or shoreline detection.
-#ifdef AURELIA_WATER_DEPTH
-// V1-WATER: the shallow endpoint is deliberately NOT near-white. Bathymetry is
-// voxel-stepped, so the thickness jumps by whole blocks at voxel walls; a
-// near-white shallow end turned every 1-block floor step into a pale
-// rectangular plate overhead (live ADAPTIVE evidence, 2026-09-29). This endpoint
-// stays clearly lighter than MID for shallow readability but close enough that
-// a single block step cannot imprint an edge. MID/DEEP are the accepted palette.
-const vec3 AURELIA_WATER_BODY_SHALLOW = vec3(0.84, 0.91, 0.96);  // clear, not white
-const vec3 AURELIA_WATER_BODY_DEEP = vec3(0.46, 0.70, 0.80);     // subtly deeper limit
-const float AURELIA_WATER_SHALLOW_TO_MID = 1.0;   // blocks
-const float AURELIA_WATER_MID_TO_DEEP = 6.0;      // blocks
-const float AURELIA_WATER_DEEP_FULL = 14.0;       // blocks
-
-vec3 aureliaWaterBody(vec3 bodyColor, float thickness) {
-    vec3 absorb = mix(AURELIA_WATER_BODY_SHALLOW, AURELIA_WATER_BODY_MID,
-                      smoothstep(AURELIA_WATER_SHALLOW_TO_MID, AURELIA_WATER_MID_TO_DEEP, thickness));
-    absorb = mix(absorb, AURELIA_WATER_BODY_DEEP,
-                 smoothstep(AURELIA_WATER_MID_TO_DEEP, AURELIA_WATER_DEEP_FULL, thickness));
-    return bodyColor * absorb;
+// Irradiance entering the water from above: sun, moon and sky, each through
+// its own visibility.
+vec3 aureliaWaterDownwelling(float sunVisibility, float moonVisibility, float skyVisibility) {
+    return aureliaSunLight() * (max(aureliaSunDirection().y, 0.0) * sunVisibility)
+         + aureliaMoonLight() * (max(aureliaMoonDirection().y, 0.0) * moonVisibility)
+         + aureliaLutTexel(AURELIA_LUT_SKY_UP).rgb * skyVisibility;
 }
-#endif
 
-// Shoreline softness, gated by AURELIA_WATER_SHORE.
-//
-// The waterline is where the water column thins to nothing against the floor.
-// This maps the same thickness signal (no new depth read) onto a 0..1 fade over
-// the first block of the column: 0 at the waterline, 1 once the water is a
-// block deep. It is a scaling term only, so it can never brighten a pixel; the
-// body curve above is untouched and the fade is smooth where they meet.
-#ifdef AURELIA_WATER_SHORE
-float aureliaWaterShoreFade(float thickness) {
-    return smoothstep(0.0, 1.0, thickness);
+// Light scattered toward the camera by a water column of `thickness`
+// blocks, lit from above by `downwelling` irradiance.
+vec3 aureliaWaterInscatter(vec3 downwelling, vec3 extinction, float thickness) {
+    vec3 albedo = AURELIA_WATER_SCATTERING / extinction;
+    vec3 transmittance = exp(-extinction * thickness);
+    return downwelling * albedo * (AURELIA_WATER_BACKSCATTER / AURELIA_PI) * (1.0 - transmittance);
 }
+
+// Radiance of open water seen from inside it along `direction`: the column's
+// in-scatter, brighter looking up toward the light than down into the dark.
+vec3 aureliaWaterColumnRadiance(vec3 direction, vec3 downwelling) {
+    vec3 extinction = AURELIA_WATER_ABSORPTION + AURELIA_WATER_SCATTERING;
+    float up = smoothstep(-0.6, 1.0, direction.y);
+    return downwelling * (AURELIA_WATER_SCATTERING / extinction) * (mix(0.12, 0.90, up * up) / AURELIA_PI);
+}
+
 #endif

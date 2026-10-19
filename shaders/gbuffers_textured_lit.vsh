@@ -4,12 +4,14 @@
 #define AURELIA_FRAME_VERTEX
 #include "/lib/color.glsl"
 #include "/lib/look.glsl"
+#include "/lib/sky.glsl"
 
 out vec2 texcoord;
 out vec2 lmcoord;
 out vec4 vertexColor;
 out vec3 worldNormal;
 out vec3 playerPosition;
+out vec4 fogTerms; // per-vertex fog (lib/sky.glsl aureliaFogTerms)
 
 void main() {
     gl_Position = ftransform();
@@ -21,4 +23,5 @@ void main() {
     worldNormal = mat3(gbufferModelViewInverse) * (gl_NormalMatrix * gl_Normal);
     vec3 viewPosition = (gl_ModelViewMatrix * gl_Vertex).xyz;
     playerPosition = (gbufferModelViewInverse * vec4(viewPosition, 1.0)).xyz;
+    fogTerms = aureliaFogTerms(playerPosition, AURELIA_FOG_DENSITY, rainStrength);
 }

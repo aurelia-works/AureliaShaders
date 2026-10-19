@@ -26,6 +26,12 @@ uniform vec3 fogColor;                // sRGB-encoded
 uniform vec3 skyColor;                // sRGB-encoded
 uniform float rainStrength;           // [0,1]
 uniform mat4 gbufferModelViewInverse; // view space -> player/world space
+// Shared by fog, clouds, wet terrain, waving and water. Declared once here;
+// lib/waving.glsl is also used by shadow.vsh, which has no look.glsl, so it
+// declares them itself only when this marker is absent.
+uniform vec3 cameraPosition;          // world position of the camera
+uniform float frameTimeCounter;       // seconds, wraps hourly in Iris
+#define AURELIA_LOOK_TIME_AND_CAMERA
 
 // --- Per-frame constants ----------------------------------------------------
 // The sun/moon world directions and the linear sky/fog colours depend only on
@@ -132,6 +138,9 @@ const float AURELIA_SUN_INTENSITY = 1.8;
 // Nether fill (hasCeiling): the dimension has no sky light, so without this
 // the only fill was the night floor and the Nether rendered near-black in game.
 const vec3 AURELIA_NETHER_AMBIENT = vec3(0.26, 0.15, 0.11);
+// Phase 5 radiance of Nether fog and sky per unit of Minecraft's linear fog
+// colour, matched to walls lit by the Nether ambient above.
+const float AURELIA_NETHER_FOG_SCALE = 0.25;
 
 // --- Ambient / sky colours (linear) -----------------------------------------
 
@@ -179,6 +188,12 @@ const float AURELIA_FOG_DENSITY_K  = 0.0022;
 const float AURELIA_FOG_RAIN_MIN   = 0.80;
 const float AURELIA_FOG_RAIN_RANGE = 0.20;
 const float AURELIA_FOG_MAX        = 0.78;
+
+// Phase 5 aerial perspective (lib/sky.glsl aureliaFogTerms): haze extinction
+// per block at the ground layer, thinning with height above it.
+const float AURELIA_HAZE_EXTINCTION    = 0.0016;
+const float AURELIA_HAZE_GROUND        = 63.0;
+const float AURELIA_HAZE_SCALE_HEIGHT  = 90.0;
 
 float aureliaFogFactor(float distanceToCamera, float density, float rain) {
     float fog = 1.0 - exp(-distanceToCamera * AURELIA_FOG_DENSITY_K * density);

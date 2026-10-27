@@ -21,7 +21,5 @@ jobs:
         run: python3 tools/validate_shaderpack.py
       - name: Python deps
         run: pip install numpy
-      - name: Test dependencies
-        run: pip install numpy
       - name: Regression tests (the ones that don't open a GL window)
         run: for t in tools/test_*.py; do grep -qE "(import|from) preview|import glfw" "$t" && continue; echo "== $t"; python3 "$t" || exit 1; done

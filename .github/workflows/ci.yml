@@ -1,0 +1,23 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: glslang
+        run: sudo apt-get update && sudo apt-get install -y glslang-tools
+      - name: Shader pack check
+        run: python3 tools/validate_shaderpack.py
+      - name: Regression tests (the ones that don't open a GL window)
+        run: for t in tools/test_*.py; do grep -qE "(import|from) preview|import glfw" "$t" && continue; echo "== $t"; python3 "$t" || exit 1; done
